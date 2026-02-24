@@ -6,6 +6,7 @@ from .blocks import BlockCoupling
 from .groups import GroupSpec
 from .groups import GroupCoupling
 
+
 class SparsityBuilder:
     def __init__(self):
         self._blocks: Dict[str, BlockSpec] = {}

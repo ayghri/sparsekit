@@ -13,16 +13,30 @@ from . import linalg
 from . import builder
 from .blocks import BlockSpec, BlockCoupling
 from .groups import GroupSpec, GroupCoupling
+from .views import BlockView
 from . import utils
+from .pruners import obs, quant, nvquant
+from .pruners.obs import StructuredOBS
+from .pruners.quant import quantize_obs, mxfp4_quantize
+from .pruners.nvquant import nvfp4_quantize, quantize_nvfp4_obs
 
 __all__ = [
     "blocks",
     "groups",
     "linalg",
     "builder",
+    "obs",
     "BlockSpec",
     "BlockCoupling",
     "GroupSpec",
     "GroupCoupling",
+    "BlockView",
+    "StructuredOBS",
+    "quantize_obs",
+    "mxfp4_quantize",
+    "quant",
+    "nvquant",
+    "nvfp4_quantize",
+    "quantize_nvfp4_obs",
     "utils",
 ]

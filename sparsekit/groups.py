@@ -128,6 +128,12 @@ class GroupSpec(SparseGroup):
         if not self.group_shape:
             self.group_shape = tuple(-1 for _ in self.block.grid_shape)
 
+        # Pad with -1 for missing trailing dimensions
+        if len(self.group_shape) < len(self.block.grid_shape):
+            self.group_shape = self.group_shape + tuple(
+                -1 for _ in range(len(self.block.grid_shape) - len(self.group_shape))
+            )
+
         if len(self.group_shape) != len(self.block.grid_shape):
             raise ValueError(
                 f"group shape {self.group_shape} has len {len(self.group_shape)} "
@@ -161,23 +167,23 @@ class GroupSpec(SparseGroup):
     def specs(self) -> Iterable[BlockSpec]:
         return [s for s in self.block.block_specs()]
 
-    # @property
     @cached_property
     def grid_shape(self) -> Tuple[int, ...]:
+        """Full grid shape including singleton dimensions."""
         return tuple(
             Bi // gi for Bi, gi in zip(self.block.grid_shape, self.group_shape)
         )
 
-    # @property
-    # def group_grid_shape(self) -> Tuple[int, ...]:
-    #     shape = tuple(s for s in self._grid_shape if s > 1)
-    #     if len(shape) == 0:
-    #         shape = (1,)
-    #     return shape
-
     @cached_property
     def numel(self) -> int:
         return math.prod(self.grid_shape)
+
+    @property
+    def group_numel(self) -> int:
+        return math.prod(self.group_shape)
+
+    def nnz(self, eps=1e-8) -> int:
+        return self.block.nnz(eps=eps)
 
     def block_to_group(self, b: Tensor, reorder=True, merge=False) -> Tensor:
         """
@@ -197,7 +203,7 @@ class GroupSpec(SparseGroup):
         if reorder or merge:
             view = append_odd_dims(view)
             if merge:
-                view = merge_odd_dims
+                view = merge_odd_dims(view)
         return view
 
 
@@ -207,18 +213,19 @@ class GroupSpec(SparseGroup):
         group_values: shape(G1,...,Gm)
         Returns tensor of shape (B1,...,Bm) with Bi=Gi*gi
         """
-        assert tuple(group_values.shape) == self.group_grid_shape
-        inter_values = group_values.view(self._grid_shape)
+        assert tuple(group_values.shape) == self.grid_shape
+        inter_values = group_values.view(self.grid_shape)
         for i, gi in enumerate(self.group_shape):  # type: ignore
-            # inter_values = inter_values.unsqueeze(2 * i + 1)
+            inter_values = inter_values.unsqueeze(2 * i + 1)
             inter_values = inter_values.repeat_interleave(gi, dim=2 * i + 1)
         inter_values = inter_values.view(self.block.grid_shape)
         return inter_values
 
     def grouped_block_norms(self, values: Values):
         block_norms = self.block.block_norms(values)
-        group_norms = self.block_to_group(block_norms)
-        return merge_odd_dims(group_norms)
+        group_norms = self.block_to_group(block_norms, reorder=False)
+        merged = merge_odd_dims(group_norms)
+        return merged
 
     def kth_largest(
         self,
@@ -231,7 +238,7 @@ class GroupSpec(SparseGroup):
         """
         grouped_block_scores = self.grouped_block_norms(element_values)
         top_scores = kth_largest(grouped_block_scores, k=num_nz, dim=-1)
-        top_scores = top_scores.view(self.group_grid_shape)
+        top_scores = top_scores.view(self.grid_shape)
         return top_scores
 
     @torch.no_grad()
@@ -259,7 +266,7 @@ class GroupSpec(SparseGroup):
 
             thresholds = self.kth_largest(None, num_nz=num_nz)
 
-        assert thresholds.shape == self.group_grid_shape
+        assert thresholds.shape == self.grid_shape
 
         block_thresholds = self.group_to_block(thresholds)
         self.block.hard_threshold(block_thresholds)
@@ -277,7 +284,7 @@ class GroupSpec(SparseGroup):
             if grouped_block_scores is None:
                 grouped_block_scores = self.grouped_block_norms(values)
             else:
-                assert grouped_block_scores.shape == self.group_grid_shape + (
+                assert grouped_block_scores.shape == self.grid_shape + (
                     self.group_numel,
                 )
 
@@ -287,7 +294,7 @@ class GroupSpec(SparseGroup):
             grouped_mask.scatter_(-1, indices, True)
 
         block_mask = unmerge_odd_dims(
-            grouped_mask.view(self._grid_shape + (self.group_numel,)),
+            grouped_mask.view(self.grid_shape + (self.group_numel,)),
             self.group_shape,
         )
 
@@ -310,7 +317,7 @@ class GroupSpec(SparseGroup):
         group_lamdas: shape (G1,G2,...,Gm) = self.group_grid_size
         eta_t:
         """
-        assert tuple(thresholds.shape) == self.group_grid_shape
+        assert tuple(thresholds.shape) == self.grid_shape
 
         block_lambdas = self.group_to_block(thresholds)
         if scale:
@@ -325,12 +332,12 @@ class GroupSpec(SparseGroup):
         )
 
     def apply_mask(self, mask):
-        assert mask.shape == tuple(self.group_grid_shape + (self.group_numel,))
+        assert mask.shape == tuple(self.grid_shape + (self.group_numel,))
 
     def __repr__(self):
         return (
             f"{self.__class__.__name__}[group_shape={self.group_shape}, "
-            f"grid_shape={self.group_grid_shape}, "
+            f"grid_shape={self.grid_shape}, "
             f"name={self.name}], "
             f"block={self.block}"
         )
@@ -382,9 +389,10 @@ class GroupCoupling(SparseGroup):
     def numel(self) -> int:
         return sum([g.block.numel() for g in self.groups])
 
-    @property
-    def group_grid_shape(self) -> Tuple[int, ...]:
-        return self.groups[0].group_grid_shape
+    @cached_property
+    def grid_shape(self) -> Tuple[int, ...]:
+        """Reference group grid shape (after order permutation)."""
+        return self._ref_group_grid_shape
 
     @property
     def group_numel(self) -> int:
@@ -396,26 +404,25 @@ class GroupCoupling(SparseGroup):
     def __post_init__(self):
         if not self.orders:
             self.orders = [
-                tuple(range(g.block.block_grid_ndim)) for g in self.groups
+                tuple(range(len(g.grid_shape))) for g in self.groups
             ]
         if len(self.orders) != len(self.groups):
             raise ValueError("orders must match number of specs.")
 
         self.orders = [
-            normalize_order(o, g.block.block_grid_ndim)
+            normalize_order(o, len(g.grid_shape))
             for o, g in zip(self.orders, self.groups)
         ]
 
         self._ref_order = self.orders[0]  # type: ignore
         self._ref_group_grid_shape = ref_permute = tuple(  # type: ignore
-            self.groups[0].group_grid_shape[i] for i in self._ref_order
+            self.groups[0].grid_shape[i] for i in self._ref_order
         )
 
         self._reverse_orders = []
 
         for g, o in zip(self.groups, self.orders):
-            Gi = g.group_grid_shape
-            gperm = tuple(Gi[i] for i in o)
+            gperm = tuple(g.grid_shape[i] for i in o)
             if gperm != ref_permute:
                 raise CouplingError(
                     "Incompatible grouped shapes "
@@ -432,7 +439,7 @@ class GroupCoupling(SparseGroup):
             ],
             dim=-1,
         )
-        assert grouped_block_norms.shape[:-1] == self.group_grid_shape
+        assert grouped_block_norms.shape[:-1] == self.grid_shape
         return grouped_block_norms
 
     def kth_largest(
@@ -476,9 +483,9 @@ class GroupCoupling(SparseGroup):
 
             thresholds = self.kth_largest(k=num_nz, values=values)
 
-        assert thresholds.shape == self.group_grid_shape
+        assert thresholds.shape == self.grid_shape
         for ro, g in zip(self._reverse_orders, self.groups):
-            g.hard_threshold(thresholds=thresholds.permute(ro))
+            g.hard_threshold(thresholds=thresholds.permute(ro).reshape(g.grid_shape))
 
     @torch.no_grad()
     def soft_threshold(
@@ -492,11 +499,11 @@ class GroupCoupling(SparseGroup):
         """
         Performs soft thresholding on all coupled parameters.
         """
-        assert thresholds.shape == self.group_grid_shape
+        assert thresholds.shape == self.grid_shape
 
         for ro, g in zip(self._reverse_orders, self.groups):
             g.soft_threshold(
-                thresholds.permute(ro),
+                thresholds.permute(ro).reshape(g.grid_shape),
                 conditioners=conditioners,
                 scale=scale,
                 max_iter=max_iter,
@@ -514,7 +521,7 @@ class GroupCoupling(SparseGroup):
         if grouped_block_scores is None:
             grouped_block_scores = self.grouped_block_norms(values)
         else:
-            assert grouped_block_scores.shape == self.group_grid_shape + (
+            assert grouped_block_scores.shape == self.grid_shape + (
                 self.group_numel,
             )
 

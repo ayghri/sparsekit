@@ -1,15 +1,18 @@
-[project]
+[tool.poetry]
 name = "sparsekit"
 version = "0.1.0"
 description = "Sparsity Kit for Structured Sparsity Specification"
-authors = [
-    {name = "Ayoub G.", email = "research@ayghri.me"}
-]
+authors = ["Ayoub G. <research@ayghri.me>"]
 readme = "README.md"
-requires-python = ">=3.10,<3.15"
-
-[tool.setuptools]
-packages = ["sparsekit"]
+packages = [{include = "sparsekit"}]
 
 [tool.poetry.dependencies]
-torch = "^2.10.0"
+python = ">=3.10,<3.15"
+torch = ">=2.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

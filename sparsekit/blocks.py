@@ -33,6 +33,7 @@ from .utils import merge_odd_dims, append_odd_dims
 from .utils import inverse_permutation, normalize_order
 from .utils import ShapeMismatchError
 from .utils import Values
+from .views import BlockView
 
 
 @dataclass
@@ -50,7 +51,7 @@ class SparseNode(ABC):
         pass
 
     @cached_property
-    def rank(self)->int:
+    def rank(self) -> int:
         return len(self.shape)
 
     @abstractmethod
@@ -59,7 +60,7 @@ class SparseNode(ABC):
         pass
 
     @abstractmethod
-    def parameters(self) -> Iterable[Parameter]:
+    def parameters(self) -> Iterable[BlockView]:
         """Iterable of Parameter objects managed by this node."""
         pass
 
@@ -247,17 +248,19 @@ class BlockSpec(SparseNode):
     """Treats the entire tensor as a grid of blocks.
 
     Attributes:
-        param: The underlying Parameter tensor.
+        param: BlockView providing shape, stride, and write-through data access.
         block_shape: Shape of each block in the grid.
         name: Optional name for identification.
     """
 
-    param: Parameter
+    param: BlockView
     block_shape: Tuple[int, ...]
     name: Optional[str] = None
 
     def __post_init__(self):
         """Validate and normalize block shape after initialization."""
+        self.param = BlockView.from_existing(self.param)
+
         if len(self.block_shape) == 0:  # if block size empty, default to 1
             self.block_shape = tuple([1 for _ in range(self.param.ndim)])
 
@@ -298,7 +301,7 @@ class BlockSpec(SparseNode):
         """Number of dimensions in the underlying tensor."""
         return self.param.ndim
 
-    def parameters(self) -> List[Parameter]:
+    def parameters(self) -> List[BlockView]:
         """List containing the single underlying Parameter."""
         return [self.param]
 
@@ -319,17 +322,6 @@ class BlockSpec(SparseNode):
     def grid_shape(self) -> Tuple[int, ...]:
         """Full grid shape including singleton dimensions."""
         return tuple(si // bi for si, bi in zip(self.shape, self.block_shape))
-
-    # @cached_property
-    # def block_grid_shape(self) -> Tuple[int, ...]:
-    #     """
-    #     Same as ``_grid_shape`` but removes dimensions that are 1.
-    #     This is the shape used by the thresholding logic.
-    #     """
-    #     shape = tuple(s for s in self._grid_shape if s > 1)
-    #     if len(shape) == 0:
-    #         return (1,)
-    #     return shape
 
     @cached_property
     def block_numel(self) -> int:
@@ -362,31 +354,24 @@ class BlockSpec(SparseNode):
             "values has to be None, Tensor or Dict[BlockSpec, Tensor]"
         )
 
+    def _raw_block_view(self, t: Tensor, reorder: bool = False) -> Tensor:
+        """Interleaved block view of a raw tensor (no value resolution)."""
+        return BlockView.block_view_of(t, self.block_shape, reorder=reorder)
+
     def block_view(
         self, values: Values, reorder: bool = True, merge=False
     ) -> Tensor:
         """Reshape tensor to interleaved block view.
 
         Args:
-            t: Input tensor matching self.shape.
+            values: Input values (None uses param.data).
+            reorder: If True, permute grid dims before block dims.
             merge: If True, collapse block dims to trailing dim.
-
-        Returns:
         """
-
         t = self._resolve_values(values)
-        assert t.shape == self.shape
-        interleaved_shape = []
-        for B, bi in zip(self.grid_shape, self.block_shape):
-            interleaved_shape.extend([B, bi])
-
-        view = t.view(*interleaved_shape)
-        if reorder or merge:
-            view = append_odd_dims(view)
-            if merge:
-                view = merge_odd_dims(view)
-
-        return view
+        return BlockView.block_view_of(
+            t, self.block_shape, reorder=reorder, merge=merge
+        )
 
     def expand_block_tensor(self, block_values: Tensor) -> Tensor:
         #     """Convert grid-shaped tensor to full grid shape with singletons.
@@ -421,25 +406,16 @@ class BlockSpec(SparseNode):
         """Broadcast block grid-shaped tensor to full tensor shape.
 
         Args:
-            block_values: Tensor with shape block_grid_shape.
+            block_values: Tensor with shape grid_shape.
             fake: If True, only unsqueeze without repeating.
 
         Returns:
             Tensor with shape self.shape (or interleaved if fake=True).
         """
         assert tuple(block_values.shape) == self.grid_shape
-
-        casted_tensor = block_values
-
-        for i, bi in enumerate(self.block_shape):
-            casted_tensor = casted_tensor.unsqueeze(2 * i + 1)
-            if not fake:
-                casted_tensor = casted_tensor.repeat_interleave(
-                    bi, dim=2 * i + 1
-                )
-        if not fake:
-            casted_tensor = casted_tensor.reshape(*self.shape)
-        return casted_tensor
+        return BlockView.broadcast_block_to_element(
+            block_values, self.block_shape, fake=fake
+        )
 
     def apply_mask(self, mask: Tensor):
         """Zero out blocks where mask is True."""
@@ -448,16 +424,15 @@ class BlockSpec(SparseNode):
     def apply_multiplier(self, multiplier: Tensor):
         """Multiply each block by corresponding scalar in multiplier."""
         assert multiplier.shape == self.grid_shape
-
-        # Shape (B1, B2, B3,...)
         multiplier = self.expand_block_tensor(multiplier)
-
-        # Shape (B1,1, B2, 1, B3, 1, ...)
-        multiplier = interleave_unsqueeze(multiplier)
-
-        # Shape (B1, b1, B2, b2,....)
-        b_view = self.block_view(self.param.data, reorder=False)
-        b_view.mul_(multiplier)
+        if isinstance(self.param, BlockView):
+            self.param.apply_multiplier(multiplier, self.block_shape)
+        else:
+            multiplier = interleave_unsqueeze(multiplier)
+            b_view = BlockView.block_view_of(
+                self.param.data, self.block_shape, reorder=False
+            )
+            b_view.mul_(multiplier)
 
     def block_reduce(
         self, values: Values, reduce_fn: Callable[[Tensor], Tensor]
@@ -634,12 +609,11 @@ class BlockCoupling(SparseNode):
 
         self._reverse_orders = []
         for s, o in zip(self.specs, self.orders):
-            Bis = s.grid_shape
-            bperm = tuple(Bis[i] for i in o)
-            if bperm != ref_permute:
+            gperm = tuple(s.grid_shape[i] for i in o)
+            if gperm != ref_permute:
                 raise ValueError(
-                    "Incompatible block grid shapes"
-                    f"after order: {bperm} vs {ref_permute} "
+                    "Incompatible block grid shapes "
+                    f"after order: {gperm} vs {ref_permute} "
                     f"(spec {s.name or '<unnamed>'})"
                 )
             self._reverse_orders.append(inverse_permutation(o))
@@ -653,7 +627,7 @@ class BlockCoupling(SparseNode):
         """Total number of elements across all specs."""
         return sum([s.numel() for s in self.specs])
 
-    def parameters(self) -> List[Parameter]:
+    def parameters(self) -> List[BlockView]:
         """List of all Parameter objects from coupled specs."""
         return [s.param for s in self.specs]
 
@@ -668,7 +642,7 @@ class BlockCoupling(SparseNode):
 
     @cached_property
     def grid_shape(self) -> Tuple[int, ...]:
-        """Reference block grid shape for the coupling."""
+        """Reference grid shape for the coupling (after order permutation)."""
         return self._ref_block_grid_shape
 
     @cached_property
@@ -707,8 +681,18 @@ class BlockCoupling(SparseNode):
         """
         values = []
         for o, s in zip(self.orders, self.specs):
-            values.append(s.block_view(spec_values[s]).permute(*o, len(o)))
+            merged = s.block_view(spec_values[s], merge=True)
+            # merged shape: (*grid_shape, block_numel)
+            ndim = len(s.grid_shape)
+            values.append(merged.permute(*o, ndim))
         return torch.concat(values, dim=-1)
+
+    def block_view(
+        self, values: Values, reorder: bool = True, merge=False
+    ) -> Tensor:
+        """Return concatenated block view across all specs."""
+        spec_values = self._resolve_values(values)
+        return self._raw_block_view(spec_values)
 
     def block_reduce(
         self, values: Values, reduce_fn: Callable[[Tensor], Tensor]
@@ -767,7 +751,9 @@ class BlockCoupling(SparseNode):
                 s: Hv[s]
                 / (
                     conditioners[s]
-                    + s.broadcast_block_to_element(mu.permute(ro).contiguous())
+                    + s.broadcast_block_to_element(
+                        mu.permute(ro).reshape(s.grid_shape).contiguous()
+                    )
                 )
                 for ro, s in zip(self._reverse_orders, self.specs)
             }
@@ -794,7 +780,9 @@ class BlockCoupling(SparseNode):
                 * conditioners[s]
                 / (
                     conditioners[s]
-                    + s.broadcast_block_to_element(mu.permute(o))
+                    + s.broadcast_block_to_element(
+                        mu.permute(o).reshape(s.grid_shape)
+                    )
                 )
             )
 
@@ -805,7 +793,8 @@ class BlockCoupling(SparseNode):
         """Convert block-level mask to element-level masks for each spec."""
         spec_masks = {}
         for ro, s in zip(self._reverse_orders, self.specs):
-            spec_masks.update(s.get_masks(block_masks.permute(ro).contiguous()))
+            m = block_masks.permute(ro).reshape(s.grid_shape).contiguous()
+            spec_masks.update(s.get_masks(m))
         return spec_masks
 
     def apply_mask(self, mask: Tensor):
@@ -814,9 +803,10 @@ class BlockCoupling(SparseNode):
 
     def apply_multiplier(self, multiplier: Tensor):
         """Multiply each block by corresponding scalar across all specs."""
-        assert multiplier.shape == self.grid_shape, "Incompatible Multiplier"
+        assert tuple(multiplier.shape) == self.grid_shape, "Incompatible Multiplier"
         for ro, s in zip(self._reverse_orders, self.specs):
-            s.apply_multiplier(multiplier.permute(ro))
+            m = multiplier.permute(ro).reshape(s.grid_shape)
+            s.apply_multiplier(m)
 
     def __repr__(self) -> str:
         """Return string representation with specs info."""
