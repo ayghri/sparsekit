@@ -1,1 +1,1 @@
-# Sparsity Kit for Structured Sparsity Specification
+# Sructured Sparsity Specification Kit
