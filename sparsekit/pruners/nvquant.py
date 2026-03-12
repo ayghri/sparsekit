@@ -1,13 +1,11 @@
-"""
-Copyright (c) 2025 Ayoub Ghriss and contributors
-Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
-Non-commercial use only; contact us for commercial licensing.
-
-NVFP4 quantization: FP4 (E2M1) values with E4M3 FP8 per-block scales.
+# Copyright (c) 2025 Anonymous Authors
+# Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
+# Non-commercial use only; contact us for commercial licensing.
+"""NVFP4 quantization: FP4 (E2M1) values with E4M3 FP8 per-block scales.
 
 Compared to MXFP4 (UE8M0 scale = pure power of 2), the E4M3 scale has
 3 mantissa bits, allowing finer-grained scale selection that better matches
-the block's dynamic range and reduces clipping/underutilization.
+the block's dynamic range.
 """
 
 import torch
@@ -118,10 +116,13 @@ def nvfp4_quantize(W: Tensor, block_size: int = 16) -> Tensor:
 
 
 def _nvfp4_quantize_block(W_P: Tensor) -> Tensor:
-    """Quantize a single block of columns to NVFP4 (E4M3 scale).
+    """Quantize a single block of columns to NVFP4 with E4M3 FP8 scale.
 
-    W_P: (M, block_size) float tensor.
-    Returns: (M, block_size) dequantized values.
+    Args:
+        W_P: (M, block_size) float tensor.
+
+    Returns:
+        (M, block_size) dequantized values using E4M3 per-row scale.
     """
     device = W_P.device
     codebook = _DOUBLED_FP4.to(device=device, dtype=torch.float32)

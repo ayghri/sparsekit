@@ -1,0 +1,10 @@
+.wy-side-nav-search .logo {
+    max-width: 150px !important;
+    width: auto !important;
+}
+
+dl.py.property + dl.py.property,
+dl.py.property + dl.py.method,
+dl.py.method + dl.py.property {
+    margin-top: 1.5em !important;
+}

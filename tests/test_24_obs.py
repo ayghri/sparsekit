@@ -20,21 +20,21 @@ Test 2 — Non-contiguous via BlockView:
 import torch
 import torch.linalg as LA
 
-from sparsekit.views import BlockView
-from sparsekit.blocks import BlockSpec
-from sparsekit.groups import GroupSpec
+from sparsekit.view import View
+from sparsekit.block import BlockSpec
+from sparsekit.group import GroupSpec
 from sparsekit.pruners.obs import StructuredOBS
 
 
 def magnitude_prune_via_group(W0, block_shape, group_shape, num_nz, param_factory):
     """Magnitude pruning using GroupSpec.get_masks."""
     param = param_factory(W0.clone())
-    block = BlockSpec(param, block_shape=block_shape)
-    g = GroupSpec(block, group_shape=group_shape)
+    block = BlockSpec(param, shape=block_shape)
+    g = GroupSpec(block, shape=group_shape)
     masks = g.get_masks(num_nz=num_nz)
     for spec, mask in masks.items():
-        spec.param.data[~mask] = 0.0
-    if isinstance(param, BlockView):
+        spec.view.data[~mask] = 0.0
+    if isinstance(param, View):
         return param.param.data
     return param.data
 
@@ -62,8 +62,8 @@ def test_contiguous_24():
 
     # OBS
     W_obs = torch.nn.Parameter(W0.clone())
-    block_obs = BlockSpec(W_obs, block_shape=block_shape)
-    group_obs = GroupSpec(block_obs, group_shape=group_shape)
+    block_obs = BlockSpec(W_obs, shape=block_shape)
+    group_obs = GroupSpec(block_obs, shape=group_shape)
     print(f"  BlockSpec: {block_obs}")
     print(f"  GroupSpec: {group_obs}")
 
@@ -128,9 +128,9 @@ def test_blockview_24():
 
     # OBS
     W_obs = torch.nn.Parameter(W0.clone())
-    view_obs = BlockView(W_obs, size=view_size, stride=view_stride)
-    block_obs = BlockSpec(view_obs, block_shape=block_shape)
-    group_obs = GroupSpec(block_obs, group_shape=group_shape)
+    view_obs = View(W_obs, shape=view_size, stride=view_stride)
+    block_obs = BlockSpec(view_obs, shape=block_shape)
+    group_obs = GroupSpec(block_obs, shape=group_shape)
 
     print(f"  BlockView: size={view_size}, stride={view_stride}")
     print(f"  BlockSpec: grid_shape={block_obs.grid_shape}, block_shape={block_shape}")
@@ -143,15 +143,15 @@ def test_blockview_24():
     # Magnitude
     def make_view(W):
         p = torch.nn.Parameter(W)
-        return BlockView(p, size=view_size, stride=view_stride)
+        return View(p, shape=view_size, stride=view_stride)
 
     W_mag_param = torch.nn.Parameter(W0.clone())
-    W_mag_view = BlockView(W_mag_param, size=view_size, stride=view_stride)
-    block_mag = BlockSpec(W_mag_view, block_shape=block_shape)
-    group_mag = GroupSpec(block_mag, group_shape=group_shape)
+    W_mag_view = View(W_mag_param, shape=view_size, stride=view_stride)
+    block_mag = BlockSpec(W_mag_view, shape=block_shape)
+    group_mag = GroupSpec(block_mag, shape=group_shape)
     masks = group_mag.get_masks(num_nz=num_nz)
     for spec, mask in masks.items():
-        spec.param.data[~mask] = 0.0
+        spec.view.data[~mask] = 0.0
     loss_mag = ((X @ W_mag_param.data.T - Y0) ** 2).sum().item()
 
     print(f"\n  {'Method':<20} {'Loss':>12}")
@@ -166,8 +166,8 @@ def test_blockview_24():
     # Sparsity check: each group of 4 blocks (j=0..3 and j=4..7) should have
     # exactly 2 blocks kept. Each block couples columns {j, j+8}.
     ok = True
-    v = BlockView(torch.nn.Parameter(W_obs.data), size=view_size, stride=view_stride)
-    bv = BlockView.block_view_of(v.data, block_shape, reorder=True, merge=True)
+    v = View(torch.nn.Parameter(W_obs.data), shape=view_size, stride=view_stride)
+    bv = View.block_view_of(v.data, block_shape, reorder=True, merge=True)
     # bv shape: (32, 8, 1, 2) -> after merge: (32, 8, 1, 2) -> grid (32,8,1), block_numel=2
     # Actually with merge=True: (32, 8, 1, 2) but grid_shape=(32,8,1) so merged = (32,8,1,2)
     # Check via norms

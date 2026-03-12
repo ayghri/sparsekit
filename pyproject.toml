@@ -2,13 +2,14 @@
 name = "sparsekit"
 version = "0.1.0"
 description = "Sparsity Kit for Structured Sparsity Specification"
-authors = ["Ayoub G. <research@ayghri.me>"]
+authors = ["Anonymous Authors"]
 readme = "README.md"
 packages = [{include = "sparsekit"}]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.15"
-torch = ">=2.0"
+python = ">=3.10,<3.14"
+torch = ">=2.8.0"
+triton = "3.4.0"
 
 [build-system]
 requires = ["poetry-core"]

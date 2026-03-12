@@ -1,87 +1,18 @@
-"""
-Copyright (c) 2025 Ayoub Ghriss and contributors
-Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
-Non-commercial use only; contact us for commercial licensing.
-"""
+# Copyright (c) 2025 Anonymous Authors
+# Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
+# Non-commercial use only; contact us for commercial licensing.
+"""Linear algebra utilities for sparse optimization."""
 
 import torch
-
-
-def kth_largest(
-    tensor: torch.Tensor,
-    k: int,
-    dim: int | None = None,
-    keepdim: bool = False,
-):
-    """Return the k-th largest value of a tensor globally or along a dimension.
-
-    Args:
-        tensor: Input tensor.
-        k: 1-based index of the largest element to select (k=1 => max).
-        dim: If provided, compute along this dimension; otherwise over all elements.
-        keepdim: Whether to retain the reduced dimension(s) when ``dim`` is not None.
-                 (Ignored when ``dim`` is None since the result is a scalar.)
-
-    Returns:
-        torch.Tensor: The k-th largest value. Shape:
-            - If dim is None: scalar 0-D tensor.
-            - If dim is not None and keepdim=False: tensor with ``dim`` removed.
-            - If dim is not None and keepdim=True: tensor with size 1 along ``dim``.
-    """
-    if not isinstance(k, int) or k <= 0:
-        raise ValueError("k must be a positive integer")
-
-    if dim is None:
-        numel = tensor.numel()
-        if numel == 0:
-            raise ValueError(
-                f"Cannot find k={k} largest element in an empty tensor."
-            )
-        if k > numel:
-            raise ValueError(
-                f"k ({k}) cannot be larger than the total number of elements "
-                f"({numel}) when dim is None"
-            )
-        k_torch = numel - k + 1
-        flat_tensor = tensor.view(-1)
-        result = torch.kthvalue(flat_tensor, k_torch)
-        return result.values  # 0-D tensor
-
-    # --- Dimensional case ---
-    if not isinstance(dim, int):
-        raise ValueError(f"dim must be an integer or None, not {type(dim)}")
-
-    ndim = tensor.dim()
-    if not -ndim <= dim < ndim:
-        raise ValueError(
-            f"Dimension {dim} is out of bounds for tensor of dimension {ndim}"
-        )
-    if dim < 0:
-        dim = ndim + dim
-
-    size_along_dim = tensor.shape[dim]
-    if size_along_dim == 0:
-        raise ValueError(
-            f"Cannot find k={k} largest element along dimension {dim} with size 0."
-        )
-    if k > size_along_dim:
-        raise ValueError(
-            f"k ({k}) cannot be larger than the size of dimension {dim} "
-            f"({size_along_dim})"
-        )
-
-    k_torch = size_along_dim - k + 1
-    result = torch.kthvalue(tensor, k_torch, dim=dim, keepdim=keepdim)
-    return result.values
 
 
 def lsqr_gkl(
     A: torch.Tensor,
     b: torch.Tensor,
-    max_iter=1000,
-    tol=1e-6,
-    x_0=None,
-    device=None,
+    max_iter: int = 1000,
+    tol: float = 1e-6,
+    x_0: torch.Tensor | None = None,
+    device: torch.device | None = None,
 ):
     """
     Solves the linear least-squares problem min ||Ax - b||_2 using the LSQR algorithm,
@@ -208,8 +139,17 @@ def lsqr_gkl(
     }
 
 
-def hard_threshold(vec, alpha, k):
-    """Keeps the k largest (in magnitude) elements of a vector."""
+def hard_threshold(vec: torch.Tensor, alpha: torch.Tensor, k: int) -> torch.Tensor:
+    """Keep the k largest elements of vec, selected by magnitude of alpha.
+
+    Args:
+        vec: Values tensor.
+        alpha: Scores tensor (same shape); top-k selected by these magnitudes.
+        k: Number of elements to keep.
+
+    Returns:
+        Tensor with only the k largest-alpha entries of vec; rest zeroed.
+    """
     if k >= vec.numel():
         return vec
     _, indices = torch.topk(alpha, k)
@@ -218,8 +158,16 @@ def hard_threshold(vec, alpha, k):
     return result
 
 
-def soft_threshold(vec, threshold):
-    """Applies the soft-thresholding operator element-wise."""
+def soft_threshold(vec: torch.Tensor, threshold: torch.Tensor | float) -> torch.Tensor:
+    """Element-wise soft-thresholding: ``sign(x) * max(abs(x) - threshold, 0)``.
+
+    Args:
+        vec: Input tensor.
+        threshold: Threshold value (scalar or broadcastable tensor).
+
+    Returns:
+        Soft-thresholded tensor.
+    """
     return torch.sign(vec) * torch.nn.functional.relu(
         torch.abs(vec) - threshold
     )
@@ -238,7 +186,7 @@ def solve_proximal_adam(
 
     Args:
         v_elements: Shape (s1,s2,...,sm). The dense weights (or updates).
-        M_elements: Shape (s1,s2,...,sm). The Adam preconditioner (sqrt(v) + eps).
+        H_elements: Shape (s1,s2,...,sm). The Adam preconditioner (sqrt(v) + eps).
         thresholds: Shape (num_blocks). The target value (eta * lambda).
 
     Returns:

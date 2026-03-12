@@ -1,15 +1,11 @@
-"""
-Copyright (c) 2025 Ayoub Ghriss and contributors
-Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
-Non-commercial use only; contact us for commercial licensing.
-
-FP4 quantization with OBS full-column compensation.
+# Copyright (c) 2025 Anonymous Authors
+# Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
+# Non-commercial use only; contact us for commercial licensing.
+"""MXFP4 quantization with OBS full-column compensation.
 
 Progressive block quantization: each block of contiguous columns is quantized
 to FP4 (shared scale per block), with quantization error compensated across all
-K columns using C = H^{-1} (frozen inverse Hessian).
-
-Supports MXFP4 (UE8M0 scale) and NVFP4 (E4M3 scale).
+K columns using ``C = H^{-1}`` (frozen inverse Hessian).
 """
 
 from typing import Callable
@@ -31,12 +27,12 @@ _DOUBLED_MXFP4 = torch.tensor(
 def mxfp4_quantize(W: Tensor, block_size: int = 16) -> Tensor:
     """Simulate MXFP4 quantization with UE8M0 shared exponent.
 
-    Each block of `block_size` contiguous columns shares a single scale
+    Each block of ``block_size`` contiguous columns shares a single scale
     derived from the block's absolute maximum:
-        scale = 2^(floor(log2(amax)) - 3)
+    ``scale = 2^(floor(log2(amax)) - 3)``.
 
     Values are rounded to the nearest point in the MXFP4 codebook
-    {0, +/-1, +/-2, +/-3, +/-4, +/-6, +/-8, +/-12} * scale.
+    ``{0, +/-1, ..., +/-12} * scale``.
 
     Args:
         W: (M, K) weight tensor (K must be divisible by block_size).
@@ -70,64 +66,6 @@ def mxfp4_quantize(W: Tensor, block_size: int = 16) -> Tensor:
     dequant = scale.unsqueeze(-1) * quant_doubled  # (M, B, block_size)
 
     return dequant.view(M, K).to(W.dtype)
-
-
-def _gptq_core(
-    W: Tensor,
-    H: Tensor,
-    fp4_block_size: int,
-    codebook: Tensor,
-    scale_fn: Callable[[Tensor], Tensor],
-    damp: float,
-) -> Tensor:
-    """Column-by-column quantization with Cholesky-based forward propagation.
-
-    Processes ALL K columns in one pass — no 128-column window limitation.
-    W and H should already be column-permuted if non-standard order is desired.
-
-    Args:
-        W: (M, K) weight tensor.
-        H: (K, K) Hessian.
-        fp4_block_size: FP4 block size for scale computation.
-        codebook: (N,) codebook tensor.
-        scale_fn: (M, block_size) -> (M,) computes per-row scale.
-        damp: Damping factor for H.
-
-    Returns:
-        (M, K) quantized tensor.
-    """
-    M, K = W.shape
-    device = W.device
-    W = W.clone().float()
-    H = H.clone().float()
-
-    dead = torch.diag(H) == 0
-    H[dead, dead] = 1
-    W[:, dead] = 0
-    damp_val = damp * torch.mean(torch.diag(H))
-    diag_idx = torch.arange(K, device=device)
-    H[diag_idx, diag_idx] += damp_val
-
-    L = LA.cholesky(H)
-    Hinv_full = torch.cholesky_inverse(L)
-    Hinv = LA.cholesky(Hinv_full, upper=True)
-
-    Q = torch.zeros_like(W)
-    scale = torch.zeros(M, device=device)
-
-    for i in range(K):
-        if i % fp4_block_size == 0:
-            end = min(i + fp4_block_size, K)
-            scale = scale_fn(W[:, i:end])
-
-        w = W[:, i]
-        q = _round_to_codebook(w, scale, codebook)
-        Q[:, i] = q
-
-        err = (w - q) / Hinv[i, i]
-        W[:, i + 1:] -= err.unsqueeze(1) * Hinv[i, i + 1:].unsqueeze(0)
-
-    return Q
 
 
 def _mxfp4_block_scale(block_vals: Tensor) -> Tensor:
@@ -293,21 +231,19 @@ def quantize_obs(
     return W_work
 
 
-def _round_to_codebook(w: Tensor, scale: Tensor, codebook: Tensor) -> Tensor:
-    """Round each element to nearest FP4 codebook value.
-
-    w: (M,) values, scale: (M,) per-row scale.
-    Returns: (M,) dequantized values.
-    """
-    possible = scale.unsqueeze(-1) * codebook  # (M, 16)
-    idx = (w.unsqueeze(-1) - possible).abs().argmin(dim=-1)
-    return scale * codebook[idx]
-
-
 def _full_quantize(
     W: Tensor, block_size: int, quantize_fn: Callable[[Tensor], Tensor]
 ) -> Tensor:
-    """Apply quantize_fn block-by-block across all columns."""
+    """Apply quantize_fn to each block of block_size contiguous columns.
+
+    Args:
+        W: (M, K) weight tensor.
+        block_size: Number of columns per block.
+        quantize_fn: (M, block_size) -> (M, block_size) quantization function.
+
+    Returns:
+        (M, K) fully quantized tensor.
+    """
     M, K = W.shape
     B = K // block_size
     out = torch.empty_like(W)
@@ -318,10 +254,14 @@ def _full_quantize(
 
 
 def _quantize_block(W_P: Tensor, device: torch.device) -> Tensor:
-    """Quantize a single block of columns to MXFP4.
+    """Quantize a single block of columns to MXFP4 with UE8M0 scale.
 
-    W_P: (M, block_size) float tensor.
-    Returns: (M, block_size) dequantized values.
+    Args:
+        W_P: (M, block_size) float tensor.
+        device: Target device for codebook.
+
+    Returns:
+        (M, block_size) dequantized values.
     """
     codebook = _DOUBLED_MXFP4.to(device=device, dtype=torch.float32)
     M, bs = W_P.shape

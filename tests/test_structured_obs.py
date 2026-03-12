@@ -22,13 +22,13 @@ Methods benchmarked:
 import torch
 import torch.linalg as LA
 
-from sparsekit.views import BlockView
-from sparsekit.blocks import BlockSpec
+from sparsekit.view import View
+from sparsekit.block import BlockSpec
 
 
 # ─── helpers ────────────────────────────────────────────────────────────
 
-def block_col_indices(view: BlockView, block_shape, device="cpu"):
+def block_col_indices(view: View, block_shape, device="cpu"):
     """
     For each block in the grid, compute which K-columns of the original
     (M, K) matrix it touches.
@@ -36,7 +36,7 @@ def block_col_indices(view: BlockView, block_shape, device="cpu"):
     Returns:
         col_idx: (*grid_shape, block_numel) long tensor of K-column indices.
     """
-    grid_shape = tuple(s // b for s, b in zip(view.size, block_shape))
+    grid_shape = tuple(s // b for s, b in zip(view.shape, block_shape))
     rank = len(block_shape)
 
     ranges = [torch.arange(b, device=device) for b in block_shape]
@@ -113,7 +113,7 @@ class StructuredOBS:
         self.M, self.K = M, K
         device = W.device
 
-        self.grid_shape = tuple(s // b for s, b in zip(view.size, block_shape))
+        self.grid_shape = tuple(s // b for s, b in zip(view.shape, block_shape))
         self.group_grid = tuple(g // gg for g, gg in zip(self.grid_shape, group_shape))
 
         self.blocks_per_group = 1
@@ -283,7 +283,7 @@ class SparseGPTBlockPruner:
         self.nnz = nnz
         device = W.device
 
-        self.grid_shape = tuple(s // b for s, b in zip(view.size, block_shape))
+        self.grid_shape = tuple(s // b for s, b in zip(view.shape, block_shape))
         self.group_grid = tuple(g // gg for g, gg in zip(self.grid_shape, group_shape))
 
         self.blocks_per_group = 1
@@ -430,7 +430,7 @@ def magnitude_prune(W0, view, block_shape, group_shape, nnz, device="cpu"):
     W = W0.clone()
     M, K = W.shape
 
-    grid_shape = tuple(s // b for s, b in zip(view.size, block_shape))
+    grid_shape = tuple(s // b for s, b in zip(view.shape, block_shape))
     group_grid = tuple(g // gg for g, gg in zip(grid_shape, group_shape))
 
     Bk_total = 1
@@ -515,7 +515,7 @@ def main():
     nnz = 2
 
     # ── Verify view mapping ──
-    view = BlockView(W, size=view_size, stride=view_stride)
+    view = View(W, shape=view_size, stride=view_stride)
     v = view.data
     for i in range(3):
         for j in range(3):
@@ -537,7 +537,7 @@ def main():
 
     # ── 1. Structured OBS ──
     W_obs = torch.nn.Parameter(W0.clone())
-    view_obs = BlockView(W_obs, size=view_size, stride=view_stride)
+    view_obs = View(W_obs, shape=view_size, stride=view_stride)
     solver = StructuredOBS(
         W=W_obs, view=view_obs, block_shape=block_shape,
         group_shape=group_shape, nnz=nnz, X=X, damp=1e-4,
@@ -547,7 +547,7 @@ def main():
 
     # ── 2. SparseGPT ──
     W_sgpt = torch.nn.Parameter(W0.clone())
-    view_sgpt = BlockView(W_sgpt, size=view_size, stride=view_stride)
+    view_sgpt = View(W_sgpt, shape=view_size, stride=view_stride)
     sgpt = SparseGPTBlockPruner(
         W=W_sgpt, view=view_sgpt, block_shape=block_shape,
         group_shape=group_shape, nnz=nnz, X=X, damp=1e-4,
@@ -556,7 +556,7 @@ def main():
     loss_sgpt = ((X @ W_sgpt.data.T - Y0) ** 2).sum().item()
 
     # ── 3. Magnitude ──
-    view_mag = BlockView(torch.nn.Parameter(W0.clone()), size=view_size, stride=view_stride)
+    view_mag = View(torch.nn.Parameter(W0.clone()), shape=view_size, stride=view_stride)
     W_mag = magnitude_prune(W0, view_mag, block_shape, group_shape, nnz, device=device)
     loss_mag = ((X @ W_mag.T - Y0) ** 2).sum().item()
 

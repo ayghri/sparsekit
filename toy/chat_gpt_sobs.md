@@ -405,11 +405,6 @@ We want the following GroupSpec to be "sliceable" so that we can go group\_spec\
 
 ```
 python
-"""
-Copyright (c) 2025 Ayoub Ghriss and contributors
-Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
-Non-commercial use only; contact us for commercial licensing.
-"""
 
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, List, Dict, Set, Mapping, Iterable
