@@ -6,7 +6,8 @@ Installation
 
 Or from source:
 
-.. code-block:: bash
+.. code-group:: bash
+
    cd sparsekit && pip install .
 
 Basic 2:4 Pruning
@@ -15,58 +16,58 @@ Basic 2:4 Pruning
 Keep 2 of every 4 contiguous columns (50 % sparse, hardware-friendly on
 NVIDIA Ampere+):
 
-.. code-block:: python
+.. code-group:: python
 
    import torch
-   from sparsekit import BlockSpec, GroupSpec, StructuredOBS
+   from sparsekit import BlockSpec, ScopeSpec, StructuredOBS
 
    W = torch.nn.Parameter(torch.randn(256, 1024, device="cuda"))
    X = torch.randn(4096, 1024, device="cuda")
 
    # 1. Build hierarchy
-   block = BlockSpec(W, shape=(1, 1))        # scalar blocks
-   group = GroupSpec(block, shape=(1, 4))     # groups of 4 columns
+   group = BlockSpec(W, shape=(1, 1))              # scalar groups
+   scope = ScopeSpec(group, shape=(1, 4))      # scopes of 4 columns
 
    # 2. Hessian and its inverse
-   H = (X.T @ X) / X.shape[0]
-   C = StructuredOBS.compute_inverse(H, damp=1e-4)
+   hessian = (X.T @ X) / X.shape[0]
+   inv_h = StructuredOBS.compute_inverse(hessian, damp=1e-4)
 
-   # 3. Prune (keep 2 of 4 blocks per group)
-   obs = StructuredOBS(group, H, C=C)
-   obs.prune(num_nz=2, compensate="local")         # fast, within-group
+   # 3. Prune (keep 2 of 4 groups per scope)
+   obs = StructuredOBS(scope, hessian, inv_h=inv_h)
+   obs.prune(num_nz=2, compensate="local")         # fast, within-scope
    # obs.prune(num_nz=2, compensate="interleaved", n_splits=64)  # best quality
 
 Magnitude Pruning (no Hessian)
 ------------------------------
 
-.. code-block:: python
+.. code-group:: python
 
-   from sparsekit import BlockSpec, GroupSpec
+   from sparsekit import BlockSpec, ScopeSpec
 
-   block = BlockSpec(W, shape=(1, 1))
-   group = GroupSpec(block, shape=(1, 4))
-   group.hard_threshold(num_nz=2)   # keeps 2 largest-norm blocks per group
+   group = BlockSpec(W, shape=(1, 1))
+   scope = ScopeSpec(group, shape=(1, 4))
+   scope.hard_threshold(num_nz=2)   # keeps 2 largest-norm groups per scope
 
 Coupled 2:4 (Two Parameters)
 -----------------------------
 
 Prune two weight matrices jointly so their sparsity masks are coupled:
 
-.. code-block:: python
+.. code-group:: python
 
-   from sparsekit import BlockSpec, BlockCoupling, GroupSpec, GroupCoupling
+   from sparsekit import BlockSpec, BlockCoupling, ScopeSpec, ScopeCoupling
 
    U = torch.nn.Parameter(torch.randn(4, 8, 2, 2, device="cuda"))
    V = torch.nn.Parameter(torch.randn(8, 16, 2, 2, device="cuda"))
 
-   block_u = BlockSpec(U, shape=(2, 2, 2, 2), name="U")
-   block_v = BlockSpec(V, shape=(2, 2, 2, 2), name="V")
+   group_u = BlockSpec(U, shape=(2, 2, 2, 2), name="U")
+   group_v = BlockSpec(V, shape=(2, 2, 2, 2), name="V")
 
-   group_u = GroupSpec(block_u, shape=(1, 1), name="gU")
-   group_v = GroupSpec(block_v, shape=(1, 4), name="gV")
+   scope_u = ScopeSpec(group_u, shape=(1, 1), name="pU")
+   scope_v = ScopeSpec(group_v, shape=(1, 4), name="pV")
 
-   coupled = GroupCoupling(
-       [group_u, group_v],
+   coupled = ScopeCoupling(
+       [scope_u, scope_v],
        orders=[(0, 1), (1, 0)],
    )
    coupled.hard_threshold(num_nz=2)
@@ -74,7 +75,7 @@ Prune two weight matrices jointly so their sparsity masks are coupled:
 Using the Builder API
 ---------------------
 
-.. code-block:: python
+.. code-group:: python
 
    from sparsekit.builder import SparsityBuilder
 
@@ -82,11 +83,11 @@ Using the Builder API
        SparsityBuilder()
        .add_block(U, (2, 2, 2, 2), name="U")
        .add_block(V, (2, 2, 2, 2), name="V")
-       .add_group("U", group_shape=(1, 1), name="gU")
-       .add_group("V", group_shape=(1, 4), name="gV")
-       .couple_groups(["gU", "gV"], orders=[(0, 1), (1, 0)], name="UV")
+       .add_scope("U", scope_shape=(1, 1), name="pU")
+       .add_scope("V", scope_shape=(1, 4), name="pV")
+       .couple_scopes(["pU", "pV"], orders=[(0, 1), (1, 0)], name="UV")
    )
-   coupling = builder.get_group("UV")
+   coupling = builder.get_scope("UV")
 
 Sparsity Patterns
 -----------------
@@ -96,8 +97,8 @@ Sparsity Patterns
    :widths: 25 20 20 35
 
    * - Pattern
-     - block shape
      - group shape
+     - scope shape
      - Description
    * - 2:4
      - ``(1, 1)``
@@ -110,8 +111,8 @@ Sparsity Patterns
    * - Coupled 2:4
      - Via ``View``
      - ``(1, 1, 4, 1)``
-     - Pair columns 8 apart in 16-col groups
-   * - Block-16 coupled
+     - Pair columns 8 apart in 16-col segments
+   * - Group-16 coupled
      - ``(1, 1, 16)``
      - ``(1, 2, 1)``
-     - 16-col blocks, 8-row coupling
+     - 16-col groups, 8-row coupling

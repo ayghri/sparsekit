@@ -1,7 +1,8 @@
-# Copyright (c) 2025 Anonymous Authors
-# Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
+# Copyright (c) 2026 - Ayoub Ghriss & Contributors
+# Licensed under CC BY-NC 4.0
+# (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
 # Non-commercial use only; contact us for commercial licensing.
-"""Block-structured tensor sparsification."""
+"""Group-structured tensor sparsification."""
 
 from dataclasses import dataclass, field
 from typing import (
@@ -19,26 +20,30 @@ import math
 from torch import Tensor
 import torch
 
-from .utils import interleave_unsqueeze
-from .utils import inverse_permutation, normalize_order
-from .utils import ShapeMismatchError
-from .utils import Values
+from .tensor_ops import interleave_unsqueeze
+from .tensor_ops import inverse_permutation, normalize_order
+from .types import ShapeMismatchError
+from .types import Values
 from .view import View
+
+
+def _vector_norm(x, **kwargs):
+    """Wrapper around torch.linalg.vector_norm."""
+    # pylint: disable=not-callable
+    return torch.linalg.vector_norm(x, **kwargs)
 
 
 @dataclass
 class SparseNode(ABC):
-    """Abstract base class for block-structured sparse tensors.
+    """Abstract base class for group-structured sparse tensors.
 
-    Provides interface for viewing tensors as block grids, computing block
+    Provides interface for viewing tensors as group grids, computing group
     statistics, and applying soft/hard thresholding operations.
     """
 
     def _lp_norm_fn(self, t: Tensor, p, keepdim=False) -> Tensor:
         """Compute Lp norm over reduction dimensions."""
-        return torch.linalg.vector_norm(
-            t, ord=p, dim=self._reduction_dim, keepdim=keepdim
-        )
+        return _vector_norm(t, ord=p, dim=self._reduction_dim, keepdim=keepdim)
 
     def _min_fn(self, t: Tensor, keepdim=False) -> Tensor:
         """Compute minimum over reduction dimensions."""
@@ -49,26 +54,25 @@ class SparseNode(ABC):
         return torch.amax(t, dim=self._reduction_dim, keepdim=keepdim)
 
     def norms(self, values: Values = None, p: int = 2) -> Tensor:
-        """Compute Lp norm for each block."""
+        """Compute Lp norm for each group."""
         return self.reduce(values, lambda t: self._lp_norm_fn(t, p=p))
 
     def min(self, values: Values = None) -> Tensor:
-        """Compute minimum value for each block."""
+        """Compute minimum value for each group."""
         return self.reduce(values, self._min_fn)
 
     def max(self, values: Values = None) -> Tensor:
-        """Compute maximum value for each block."""
+        """Compute maximum value for each group."""
         return self.reduce(values, self._max_fn)
 
     @property
     def grid_ndim(self) -> int:
-        """Number of dimensions in the block grid."""
+        """Number of dimensions in the group grid."""
         return len(self.grid_shape)
 
     @cached_property
-    @abstractmethod
     def num_blocks(self) -> int:
-        """Total number of blocks in the grid."""
+        """Total number of groups in the grid."""
         return math.prod(self.grid_shape)
 
     @abstractmethod
@@ -79,7 +83,7 @@ class SparseNode(ABC):
     @cached_property
     @abstractmethod
     def grid_shape(self) -> Tuple[int, ...]:
-        """Shape of the block grid (number of blocks per dimension)."""
+        """Shape of the group grid (number of groups per dimension)."""
         pass
 
     @abstractmethod
@@ -101,38 +105,38 @@ class SparseNode(ABC):
     @cached_property
     @abstractmethod
     def block_numel(self) -> int:
-        """Number of elements per block."""
+        """Number of elements per group."""
         pass
 
     @cached_property
     @abstractmethod
     def _reduction_dim(self) -> int | Tuple[int, ...]:
-        """Dimension(s) to reduce over when computing block statistics."""
+        """Dimension(s) to reduce over when computing group statistics."""
         pass
 
     @abstractmethod
     def apply_mask(self, mask: Tensor) -> None:
-        """Zero out blocks where mask is True."""
+        """Zero out groups where mask is True."""
         pass
 
     @abstractmethod
     def apply_multiplier(self, multiplier: Tensor):
-        """Multiply each block by corresponding scalar in multiplier."""
+        """Multiply each group by corresponding scalar in multiplier."""
         pass
 
     @abstractmethod
     def block_view(self, values: Values, reorder=True, merge=False) -> Tensor:
-        """Return a block-structured view of values."""
+        """Return a group-structured view of values."""
         pass
 
     @abstractmethod
     def reduce(
         self, values: Values, reduce_fn: Callable[[Tensor], Tensor]
     ) -> Tensor:
-        """Apply reduce_fn over each block and return grid-shaped result."""
+        """Apply reduce_fn over each group and return grid-shaped result."""
         pass
 
-    def _soft_threshold_euclid(self, block_lambdas: Values, eps=1e-8):
+    def _soft_threshold_euclid(self, block_lambdas: Tensor, eps: float = 1e-8):
         """In-place Euclidean (L2) proximal step."""
 
         assert tuple(block_lambdas.shape) == self.grid_shape
@@ -166,10 +170,10 @@ class SparseNode(ABC):
         eps: float = 1e-20,
         atol: float = 1e-8,
     ) -> None:
-        """Apply soft thresholding to shrink block norms.
+        """Apply soft thresholding to shrink group norms.
 
         Args:
-            block_thresholds: Per-block threshold values.
+            block_thresholds: Per-group threshold values.
             conditioners: Optional diagonal conditioner for Adam variant.
             scale: If True, scale thresholds by sqrt(block_numel).
             max_iter: Maximum iterations for Adam variant.
@@ -179,7 +183,7 @@ class SparseNode(ABC):
         assert tuple(block_thresholds.shape) == self.grid_shape
 
         if scale:
-            block_thresholds = block_thresholds * (self.numel()**0.5)
+            block_thresholds = block_thresholds * (self.numel() ** 0.5)
         if conditioners is None:
             self._soft_threshold_euclid(block_thresholds, eps=eps)
         else:
@@ -192,10 +196,10 @@ class SparseNode(ABC):
 
     @torch.no_grad()
     def hard_threshold(self, thresholds: Tensor, values: Values = None):
-        """Zero out blocks with values-based norm below threshold.
+        """Zero out groups with values-based norm below threshold.
 
         Args:
-            thresholds: Per-block threshold values.
+            thresholds: Per-group threshold values.
             values: Optional values to compute norms from; defaults to data.
         """
         if tuple(thresholds.shape) != self.grid_shape:
@@ -210,7 +214,7 @@ class SparseNode(ABC):
 
     @abstractmethod
     def get_masks(self, block_masks: Tensor) -> Mapping["BlockSpec", Tensor]:
-        """Convert block-level mask to element-level masks per BlockSpec."""
+        """Convert group-level mask to element-level masks per BlockSpec."""
         pass
 
     @abstractmethod
@@ -227,11 +231,11 @@ class SparseNode(ABC):
 
 @dataclass
 class BlockSpec(SparseNode):
-    """Treats the entire tensor as a grid of blocks.
+    """Treats the entire tensor as a grid of groups.
 
     Attributes:
-        param: BlockView providing shape, stride, and write-through data access.
-        block_shape: Shape of each block in the grid.
+        param: GroupView providing shape, stride, and write-through data access.
+        block_shape: Shape of each group in the grid.
         name: Optional name for identification.
     """
 
@@ -240,29 +244,29 @@ class BlockSpec(SparseNode):
     name: Optional[str] = None
 
     def __post_init__(self):
-        """Validate and normalize block shape after initialization."""
+        """Validate and normalize group shape after initialization."""
         self.view = View.from_existing(self.view)
 
-        if len(self.shape) == 0:  # if block size empty, default to 1
+        if len(self.shape) == 0:  # if group size empty, default to 1
             self.shape = tuple([1 for _ in range(self.view.ndim)])
 
         if len(self.shape) != self.view.ndim:
             raise ValueError(
-                f"{self.name} block has len {len(self.shape)}:{self.shape} "
+                f"{self.name} group has len {len(self.shape)}:{self.shape} "
                 f"but tensor is {self.view.ndim}D:{self.view.shape}"
             )
         self.shape = tuple(
             [
-                bi
-                if bi > 0
-                else self.view.shape[i]  # -1 means use the entire dim
+                (
+                    bi if bi > 0 else self.view.shape[i]
+                )  # -1 means use the entire dim
                 for i, bi in enumerate(self.shape)
             ]
         )
         for i, (si, bi) in enumerate(zip(self.view.shape, self.shape)):
             if si % bi != 0:
                 raise ValueError(
-                    f"dim {i}: size {si} not divisible by block_size[{i}]={bi}"
+                    f"dim {i}: size {si} not divisible by block_shape[{i}]={bi}"
                 )
 
     @property
@@ -281,13 +285,18 @@ class BlockSpec(SparseNode):
         return tuple(si // bi for si, bi in zip(self.view.shape, self.shape))
 
     @cached_property
+    def num_blocks(self) -> int:
+        """Total number of groups in the grid."""
+        return math.prod(self.grid_shape)
+
+    @cached_property
     def block_numel(self) -> int:
-        """Number of elements per block."""
+        """Number of elements per group."""
         return math.prod(self.shape)
 
     @cached_property
     def _reduction_dim(self) -> Tuple[int, ...]:
-        """Odd-indexed dimensions to reduce over for block statistics."""
+        """Odd-indexed dimensions to reduce over for group statistics."""
         return tuple(range(1, 2 * len(self.shape), 2))
 
     # ── Methods ──────────────────────────────────────────────────────
@@ -316,7 +325,7 @@ class BlockSpec(SparseNode):
         """Resolve values to a view-shaped tensor.
 
         If values is a raw Tensor, applies the same as_strided view
-        as self.view so that block operations see the correct layout.
+        as self.view so that group operations see the correct layout.
         """
         if values is None:
             return self.view.data
@@ -339,12 +348,12 @@ class BlockSpec(SparseNode):
     def block_view(
         self, values: Values, reorder: bool = True, merge=False
     ) -> Tensor:
-        """Reshape tensor to interleaved block view.
+        """Reshape tensor to interleaved group view.
 
         Args:
             values: Input values (None uses param.data).
-            reorder: If True, permute grid dims before block dims.
-            merge: If True, collapse block dims to trailing dim.
+            reorder: If True, permute grid dims before group dims.
+            merge: If True, collapse group dims to trailing dim.
         """
         t = self._resolve_values(values)
         return View.block_view_of(t, self.shape, reorder=reorder, merge=merge)
@@ -363,7 +372,7 @@ class BlockSpec(SparseNode):
     def broadcast_block_to_element(
         self, block_values: Tensor, fake=False
     ) -> Tensor:
-        """Broadcast block grid-shaped tensor to full tensor shape.
+        """Broadcast group grid-shaped tensor to full tensor shape.
 
         Args:
             block_values: Tensor with shape grid_shape.
@@ -378,11 +387,11 @@ class BlockSpec(SparseNode):
         )
 
     def apply_mask(self, mask: Tensor):
-        """Zero out blocks where mask is True."""
+        """Zero out groups where mask is True."""
         self.apply_multiplier(~mask)
 
     def apply_multiplier(self, multiplier: Tensor):
-        """Multiply each block by corresponding scalar in multiplier."""
+        """Multiply each group by corresponding scalar in multiplier."""
         assert multiplier.shape == self.grid_shape
         multiplier = self.expand_block_tensor(multiplier)
         if isinstance(self.view, View):
@@ -397,7 +406,7 @@ class BlockSpec(SparseNode):
     def reduce(
         self, values: Values, reduce_fn: Callable[[Tensor], Tensor]
     ) -> Tensor:
-        """Apply reduce_fn over each block and return grid-shaped result."""
+        """Apply reduce_fn over each group and return grid-shaped result."""
         t = self.block_view(values, reorder=False)
         return reduce_fn(t).view(self.grid_shape)
 
@@ -422,10 +431,10 @@ class BlockSpec(SparseNode):
                 block_thresholds / conditioner.view(self.grid_shape)
             )
 
-        Hv = conditioner * self.view.data
-        Hv_norms = self.norms(Hv)
+        hess_weighted = conditioner * self.view.data
+        hess_weighted_norms = self.norms(hess_weighted)
 
-        denom = Hv_norms - block_thresholds
+        denom = hess_weighted_norms - block_thresholds
         non_survivors = denom <= 0.0
         denom.clamp_(min=0.0).add_(eps)
 
@@ -433,7 +442,8 @@ class BlockSpec(SparseNode):
         h_max = self.max(conditioner)
 
         # block_thresholds > 0
-        # if Hv_norms < block_thresholds, then denom<0, so we clamp for safety
+        # if hess_weighted_norms < block_thresholds, then denom<0,
+        # so we clamp for safety
 
         mu_low = (block_thresholds * h_min) / denom
         mu_high = (block_thresholds * h_max) / denom
@@ -446,23 +456,25 @@ class BlockSpec(SparseNode):
             min=0.0
         )
 
-        blocked_thresholds = self.broadcast_block_to_element(
+        grouped_thresholds = self.broadcast_block_to_element(
             block_thresholds, fake=True
         )
 
         # (B1, b1, B2, b1,...)
-        blocked_conditioner = self.block_view(conditioner, reorder=False)
-        blocked_Hv = self.block_view(Hv, reorder=False)
+        grouped_conditioner = self.block_view(conditioner, reorder=False)
+        grouped_hess_weighted = self.block_view(hess_weighted, reorder=False)
 
         mu = (mu_low + mu_high) / 2
         for _ in range(max_iter):
             # Compute Zeta(mu)
-            # scaling = H_block / (H_block + mu)
+            # scaling = H_group / (H_group + mu)
 
             # ||H / (H+mu) v||
             # (B1, 1, B2,1,...)
             weighted_norm = self._lp_norm_fn(
-                blocked_Hv / (blocked_conditioner + mu), p=2, keepdim=True
+                grouped_hess_weighted / (grouped_conditioner + mu),
+                p=2,
+                keepdim=True,
             )
             # zeta = mu * ||weighted_v||
             zeta = mu * weighted_norm
@@ -470,7 +482,7 @@ class BlockSpec(SparseNode):
             # Zeta is strictly increasing with mu.
             # If zeta < threshold, mu is too small -> low = mu
             # If zeta > threshold, mu is too big -> high = mu
-            mask_low = zeta < blocked_thresholds
+            mask_low = zeta < grouped_thresholds
             mu_low = torch.where(mask_low, mu, mu_low)
             mu_high = torch.where(~mask_low, mu, mu_high)
             mu = (mu_low + mu_high) / 2
@@ -488,7 +500,7 @@ class BlockSpec(SparseNode):
         self.apply_mask(non_survivors)
 
     def get_masks(self, block_masks: Tensor) -> Mapping["BlockSpec", Tensor]:
-        """Convert block-level mask to element-level mask.
+        """Convert group-level mask to element-level mask.
 
         Args:
             block_masks: Boolean tensor with shape block_grid_shape.
@@ -502,7 +514,7 @@ class BlockSpec(SparseNode):
     def __repr__(self) -> str:
         """Return string representation with shape information."""
         return (
-            f"{self.__class__.__name__}(block shape={self.shape}, "
+            f"{self.__class__.__name__}(group shape={self.shape}, "
             f"grid_shape={self.grid_shape}, name={self.name!r})"
         )
 
@@ -520,7 +532,7 @@ class BlockCoupling(SparseNode):
 
     Attributes:
         specs: List of BlockSpec objects to couple.
-        orders: Axis permutations to align block grids.
+        orders: Axis permutations to align group grids.
         name: Optional name for identification.
     """
 
@@ -551,7 +563,7 @@ class BlockCoupling(SparseNode):
             gperm = tuple(s.grid_shape[i] for i in o)
             if gperm != ref_permute:
                 raise ValueError(
-                    "Incompatible block grid shapes "
+                    "Incompatible group grid shapes "
                     f"after order: {gperm} vs {ref_permute} "
                     f"(spec {s.name or '<unnamed>'})"
                 )
@@ -576,17 +588,17 @@ class BlockCoupling(SparseNode):
 
     @cached_property
     def num_blocks(self) -> int:
-        """Number of blocks (same for all specs after alignment)."""
+        """Number of groups (same for all specs after alignment)."""
         return self.specs[0].num_blocks
 
     @cached_property
     def block_numel(self) -> int:
-        """Total elements per block across all specs."""
+        """Total elements per group across all specs."""
         return sum([s.block_numel for s in self.specs])
 
     @cached_property
     def _reduction_dim(self):
-        """Reduction dimension for block statistics (last dim)."""
+        """Reduction dimension for group statistics (last dim)."""
         return -1
 
     # ── Methods ──────────────────────────────────────────────────────
@@ -606,7 +618,7 @@ class BlockCoupling(SparseNode):
     def _resolve_values(self, values: Values) -> Mapping[BlockSpec, Tensor]:
         """Resolve values to a mapping of BlockSpec to Tensor."""
         if values is None:
-            return {s: s.view for s in self.specs}
+            return {s: s.view.data for s in self.specs}
         if isinstance(values, dict):
             return {s: values[s] for s in self.specs}
         raise ValueError("values must be Mapping[BlockSpec,Tensor]")
@@ -614,7 +626,7 @@ class BlockCoupling(SparseNode):
     def _raw_block_view(
         self, spec_values: Mapping[BlockSpec, Tensor]
     ) -> Tensor:
-        """Reshape and concatenate all spec values into unified block view.
+        """Reshape and concatenate all spec values into unified group view.
 
         Args:
             spec_values: Mapping from BlockSpec to tensor values.
@@ -633,26 +645,26 @@ class BlockCoupling(SparseNode):
     def block_view(
         self, values: Values, reorder: bool = True, merge=False
     ) -> Tensor:
-        """Return concatenated block view across all specs."""
+        """Return concatenated group view across all specs."""
         spec_values = self._resolve_values(values)
         return self._raw_block_view(spec_values)
 
     def reduce(
         self, values: Values, reduce_fn: Callable[[Tensor], Tensor]
     ) -> Tensor:
-        """Apply reduce_fn over concatenated block view."""
+        """Apply reduce_fn over concatenated group view."""
         spec_values = self._resolve_values(values)
         concat_values = self._raw_block_view(spec_values)
         return reduce_fn(concat_values)
 
-    def _soft_threshold_euclid(self, block_thresholds, eps=1e-8):
+    def _soft_threshold_euclid(self, block_lambdas: Tensor, eps: float = 1e-8):
         """In-place Euclidean (L2) proximal step."""
 
-        assert tuple(block_thresholds.shape) == self.grid_shape
+        assert tuple(block_lambdas.shape) == self.grid_shape
 
         block_norms = self.norms({s: s.view.data for s in self.specs})
 
-        block_factor = 1 - block_thresholds / (block_norms + eps)
+        block_factor = 1 - block_lambdas / (block_norms + eps)
         block_factor.clamp_(min=0.0)
 
         self.apply_multiplier(block_factor)
@@ -660,21 +672,23 @@ class BlockCoupling(SparseNode):
     def _soft_threshold_diag_cond(
         self,
         block_thresholds: Tensor,
-        conditioners: Mapping["BlockSpec", Tensor],
+        conditioners: Values,
         max_iter: int = 20,
+        eps: float = 1e-20,
         atol: float = 1e-8,
     ) -> None:
         """In-place Adam-conditioned proximal step via bisection."""
         assert tuple(block_thresholds.shape) == self.grid_shape
+        assert isinstance(conditioners, Mapping)
         for s in self.specs:
             assert conditioners[s].shape == s.view.shape
 
-        Hv = {s: conditioners[s] * s.view.data for s in self.specs}
-        Hv_norms = self.norms(Hv)
+        hess_weighted = {s: conditioners[s] * s.view.data for s in self.specs}
+        hess_weighted_norms = self.norms(hess_weighted)
 
-        denom = Hv_norms - block_thresholds
+        denom = hess_weighted_norms - block_thresholds
 
-        denom = Hv_norms - block_thresholds
+        denom = hess_weighted_norms - block_thresholds
         non_survivors = denom <= 0.0
         denom.clamp_(min=0.0)
 
@@ -687,11 +701,11 @@ class BlockCoupling(SparseNode):
         mu = (mu_low + mu_high) / 2
         for _ in range(max_iter):
             # Compute Zeta(mu)
-            # scaling = H_block / (H_block + mu)
+            # scaling = H_group / (H_group + mu)
             # mu.contiguous()
 
             weighted_vs = {
-                s: Hv[s]
+                s: hess_weighted[s]
                 / (
                     conditioners[s]
                     + s.broadcast_block_to_element(
@@ -733,7 +747,7 @@ class BlockCoupling(SparseNode):
         self.apply_mask(non_survivors)
 
     def get_masks(self, block_masks: Tensor) -> Mapping["BlockSpec", Tensor]:
-        """Convert block-level mask to element-level masks for each spec."""
+        """Convert group-level mask to element-level masks for each spec."""
         spec_masks = {}
         for ro, s in zip(self._reverse_orders, self.specs):
             m = block_masks.permute(ro).reshape(s.grid_shape).contiguous()
@@ -741,14 +755,14 @@ class BlockCoupling(SparseNode):
         return spec_masks
 
     def apply_mask(self, mask: Tensor):
-        """Zero out blocks where mask is True across all specs."""
+        """Zero out groups where mask is True across all specs."""
         self.apply_multiplier(~mask)
 
     def apply_multiplier(self, multiplier: Tensor):
-        """Multiply each block by corresponding scalar across all specs."""
-        assert tuple(multiplier.shape) == self.grid_shape, (
-            "Incompatible Multiplier"
-        )
+        """Multiply each group by corresponding scalar across all specs."""
+        assert (
+            tuple(multiplier.shape) == self.grid_shape
+        ), "Incompatible Multiplier"
         for ro, s in zip(self._reverse_orders, self.specs):
             m = multiplier.permute(ro).reshape(s.grid_shape)
             s.apply_multiplier(m)

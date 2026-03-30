@@ -1,42 +1,34 @@
-# Copyright (c) 2025 Anonymous Authors
-# Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
+# Copyright (c) 2026 - Ayoub Ghriss & Contributors
+# Licensed under CC BY-NC 4.0
+# (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
 # Non-commercial use only; contact us for commercial licensing.
-"""SparseKit: Block-structured sparse tensor operations."""
+"""SparseKit: Group-structured sparse tensor operations."""
 
 from . import block
-from . import group
-from . import linalg
+from . import scope
 from . import builder
+from . import tensor_ops
+from . import linalg
 from .block import BlockSpec, BlockCoupling
-from .group import GroupSpec, GroupCoupling
+from .scope import ScopeSpec, ScopeCoupling
 from .view import View
-from . import utils
-from . import viz
 from .viz import draw_layout
-from .pruners import obs, quant, nvquant
+from .pruners import obs, obd
 from .pruners.obs import StructuredOBS
-from .pruners.quant import quantize_obs, mxfp4_quantize
-from .pruners.nvquant import nvfp4_quantize, quantize_nvfp4_obs
 
 __all__ = [
     "block",
-    "group",
-    "linalg",
+    "scope",
     "builder",
+    "tensor_ops",
+    "linalg",
     "obs",
+    "obd",
     "BlockSpec",
     "BlockCoupling",
-    "GroupSpec",
-    "GroupCoupling",
+    "ScopeSpec",
+    "ScopeCoupling",
     "View",
     "StructuredOBS",
-    "quantize_obs",
-    "mxfp4_quantize",
-    "quant",
-    "nvquant",
-    "nvfp4_quantize",
-    "quantize_nvfp4_obs",
-    "utils",
-    "viz",
     "draw_layout",
 ]

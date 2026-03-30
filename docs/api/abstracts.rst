@@ -1,10 +1,10 @@
 Abstract Base Classes
 =====================
 
-These abstract classes define the interface shared by all block and group
+These abstract classes define the interface shared by all group and scope
 types.  You do not instantiate them directly — use :class:`~sparsekit.block.BlockSpec`,
-:class:`~sparsekit.block.BlockCoupling`, :class:`~sparsekit.group.GroupSpec`,
-or :class:`~sparsekit.group.GroupCoupling` instead.
+:class:`~sparsekit.block.BlockCoupling`, :class:`~sparsekit.scope.ScopeSpec`,
+or :class:`~sparsekit.scope.ScopeCoupling` instead.
 
 SparseNode
 ----------
@@ -13,9 +13,9 @@ SparseNode
    :members:
    :show-inheritance:
 
-SparseGroup
+SparseScope
 -----------
 
-.. autoclass:: sparsekit.group.SparseGroup
+.. autoclass:: sparsekit.scope.SparseScope
    :members:
    :show-inheritance:

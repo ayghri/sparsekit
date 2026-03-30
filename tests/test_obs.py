@@ -53,7 +53,7 @@ def eval_acc_loss(model, loader, device):
 
 # -----------------------------
 # Build exact Gauss–Newton Hessian for phi=[vec(W1); b1]
-# RMS-OBS: uses affine RMSNorm Jacobian metric G(y)=J_y^T J_y
+# RMG-OBS: uses affine RMSNorm Jacobian metric G(y)=J_y^T J_y
 # Vanilla-OBS: uses G=I (linear-output objective)
 # -----------------------------
 def build_H_rms_fc1(model, X_samples, device):
@@ -242,7 +242,7 @@ def main():
     phi_rms = obs_prune_phi(H_rms, phi0, d_bias=hidden, prune_count=K, damp=1e-3)
     phi_lin = obs_prune_phi(H_lin, phi0, d_bias=hidden, prune_count=K, damp=1e-3)
 
-    # Evaluate RMS-OBS
+    # Evaluate RMG-OBS
     model_rms = SmallNet(hidden=hidden).to(device)
     model_rms.load_state_dict(model.state_dict())
     set_fc1_from_phi(model_rms, phi_rms)
@@ -255,7 +255,7 @@ def main():
     acc_lin, loss_lin = eval_acc_loss(model_lin, test_loader, device)
 
     print(f"Baseline    acc={base_acc:.4f}  loss={base_loss:.4f}")
-    print(f"RMS-OBS     acc={acc_rms:.4f}  loss={loss_rms:.4f}   (pruned {K} fc1 weights)")
+    print(f"RMG-OBS     acc={acc_rms:.4f}  loss={loss_rms:.4f}   (pruned {K} fc1 weights)")
     print(f"Vanilla OBS acc={acc_lin:.4f}  loss={loss_lin:.4f}   (pruned {K} fc1 weights)")
 
 if __name__ == "__main__":

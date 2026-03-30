@@ -1,16 +1,16 @@
-Groups
-======
+Scope Specification
+===================
 
-.. automodule:: sparsekit.group
+.. automodule:: sparsekit.scope
    :no-members:
 
-.. autoclass:: sparsekit.group.GroupSpec
+.. autoclass:: sparsekit.scope.ScopeSpec
    :members:
    :member-order: bysource
    :undoc-members:
    :show-inheritance:
 
-.. autoclass:: sparsekit.group.GroupCoupling
+.. autoclass:: sparsekit.scope.ScopeCoupling
    :members:
    :member-order: bysource
    :undoc-members:

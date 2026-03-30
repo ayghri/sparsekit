@@ -1,21 +1,21 @@
 """
-Structured OBS test using BlockView + BlockSpec.
+Structured OBS test using GroupView + BlockSpec.
 
 Configuration:
   W:            (M, K) = (32, 16)
-  BlockView:    size=(32, 8, 2), stride=(16, 1, 8)
+  GroupView:    size=(32, 8, 2), stride=(16, 1, 8)
                 view[i, j, k] = W[i, j + 8*k]
   block_shape:  (1, 1, 2)   -> grid_shape = (32, 8, 1)
-                each block couples columns {j, j+8} for a given row i
-  group_shape:  (1, 4, 1)   -> group_grid = (32, 2, 1)
-                group (r,0,0): blocks j=0..3 -> columns {0,8},{1,9},{2,10},{3,11}
-                group (r,1,0): blocks j=4..7 -> columns {4,12},{5,13},{6,14},{7,15}
-  nnz:          2  (keep 2 of 4 blocks per group, prune 2)
+                each group couples columns {j, j+8} for a given row i
+  block_shape:  (1, 4, 1)   -> block_grid = (32, 2, 1)
+                block (r,0,0): groups j=0..3 -> columns {0,8},{1,9},{2,10},{3,11}
+                block (r,1,0): groups j=4..7 -> columns {4,12},{5,13},{6,14},{7,15}
+  nnz:          2  (keep 2 of 4 groups per block, prune 2)
 
 Methods benchmarked:
-  1. Structured OBS — full H^{-1}, greedy block selection, Schur complement update
+  1. Structured OBS — full H^{-1}, greedy group selection, Schur complement update
   2. SparseGPT      — Cholesky(H^{-1}), sequential column processing, one-shot selection
-  3. Magnitude       — prune smallest-norm blocks per group
+  3. Magnitude       — prune smallest-norm groups per block
   4. Naive zero      — same pattern as OBS, but no weight compensation
 """
 
@@ -30,7 +30,7 @@ from sparsekit.block import BlockSpec
 
 def block_col_indices(view: View, block_shape, device="cpu"):
     """
-    For each block in the grid, compute which K-columns of the original
+    For each group in the grid, compute which K-columns of the original
     (M, K) matrix it touches.
 
     Returns:
@@ -53,42 +53,42 @@ def block_col_indices(view: View, block_shape, device="cpu"):
     return flat_offsets % K
 
 
-def build_group_mapping(grid_shape, group_shape, group_grid, device):
+def build_block_mapping(grid_shape, block_shape, block_grid, device):
     """
-    Build vectorized mappings from block-columns to groups.
+    Build vectorized mappings from group-columns to blocks.
 
     Returns:
-        block_to_group:       (Bk_total,) group index per block-column
-        block_within_group:   (Bk_total,) index within group per block-column
+        block_to_scope:       (Gk_total,) block index per group-column
+        block_within_scope:   (Gk_total,) index within block per group-column
     """
     grid_rest = grid_shape[1:]
-    group_rest = group_shape[1:]
-    gg_rest = group_grid[1:]
+    block_rest = block_shape[1:]
+    gg_rest = block_grid[1:]
 
-    Bk_total = 1
+    Gk_total = 1
     for g in grid_rest:
-        Bk_total *= g
+        Gk_total *= g
 
     bc_ranges = [torch.arange(g, device=device) for g in grid_rest]
-    bc_grid = torch.stack(torch.meshgrid(*bc_ranges, indexing="ij"), dim=-1).reshape(Bk_total, -1)
+    bc_grid = torch.stack(torch.meshgrid(*bc_ranges, indexing="ij"), dim=-1).reshape(Gk_total, -1)
 
-    group_pos = bc_grid // torch.tensor(group_rest, device=device)
+    block_pos = bc_grid // torch.tensor(block_rest, device=device)
     gg_strides = []
     s = 1
     for g in reversed(list(gg_rest)):
         gg_strides.append(s)
         s *= g
-    block_to_group = (group_pos * torch.tensor(list(reversed(gg_strides)), device=device)).sum(dim=-1)
+    block_to_scope = (block_pos * torch.tensor(list(reversed(gg_strides)), device=device)).sum(dim=-1)
 
-    within_pos = bc_grid % torch.tensor(group_rest, device=device)
+    within_pos = bc_grid % torch.tensor(block_rest, device=device)
     gs_strides = []
     s = 1
-    for g in reversed(group_rest):
+    for g in reversed(block_rest):
         gs_strides.append(s)
         s *= g
-    block_within_group = (within_pos * torch.tensor(list(reversed(gs_strides)), device=device)).sum(dim=-1)
+    block_within_scope = (within_pos * torch.tensor(list(reversed(gs_strides)), device=device)).sum(dim=-1)
 
-    return block_to_group, block_within_group
+    return block_to_scope, block_within_scope
 
 
 # ─── Structured OBS solver (vectorized) ─────────────────────────────────
@@ -97,63 +97,63 @@ class StructuredOBS:
     """
     Vectorized structured OBS.
 
-    One C = H^{-1} per group row.  Within each group row, greedily prune
-    the cheapest block, update W and C, repeat.
-    All group rows are independent and processed in parallel (batched).
+    One C = H^{-1} per block row.  Within each block row, greedily prune
+    the cheapest group, update W and C, repeat.
+    All block rows are independent and processed in parallel (batched).
     """
 
-    def __init__(self, W, view, block_shape, group_shape, nnz, X, damp=1e-4):
+    def __init__(self, W, view, group_shape, scope_shape, nnz, X, damp=1e-4):
         self.W = W
         self.view = view
-        self.block_shape = tuple(block_shape)
         self.group_shape = tuple(group_shape)
+        self.scope_shape = tuple(scope_shape)
         self.nnz = nnz
 
         M, K = W.shape
         self.M, self.K = M, K
         device = W.device
 
-        self.grid_shape = tuple(s // b for s, b in zip(view.shape, block_shape))
-        self.group_grid = tuple(g // gg for g, gg in zip(self.grid_shape, group_shape))
+        self.grid_shape = tuple(s // b for s, b in zip(view.shape, group_shape))
+        self.block_grid = tuple(g // gg for g, gg in zip(self.grid_shape, scope_shape))
 
-        self.blocks_per_group = 1
-        for gs in group_shape:
-            self.blocks_per_group *= gs
-        self.num_prune = self.blocks_per_group - nnz
+        self.blocks_per_scope = 1
+        for gs in scope_shape:
+            self.blocks_per_scope *= gs
+        self.num_prune = self.blocks_per_scope - nnz
 
-        col_idx_full = block_col_indices(view, block_shape, device=device)
-        Bk_total = 1
+        col_idx_full = block_col_indices(view, group_shape, device=device)
+        Gk_total = 1
         for g in self.grid_shape[1:]:
-            Bk_total *= g
+            Gk_total *= g
         self.bk = col_idx_full.shape[-1]
-        self.col_idx = col_idx_full[0].reshape(Bk_total, self.bk)
-        self.Bk_total = Bk_total
+        self.col_idx = col_idx_full[0].reshape(Gk_total, self.bk)
+        self.Gk_total = Gk_total
 
-        self.rows_per_group = self.group_shape[0] * self.block_shape[0]
-        self.num_group_rows = self.group_grid[0]
+        self.rows_per_group = group_shape[0] * scope_shape[0]
+        self.num_scope_rows = self.block_grid[0]
 
-        self.num_groups_per_row = 1
-        for gg in self.group_grid[1:]:
-            self.num_groups_per_row *= gg
+        self.num_scopes_per_row = 1
+        for gg in self.block_grid[1:]:
+            self.num_scopes_per_row *= gg
 
-        self.block_to_group, self.block_within_group = build_group_mapping(
-            self.grid_shape, self.group_shape, self.group_grid, device,
+        self.block_to_scope, self.block_within_scope = build_block_mapping(
+            self.grid_shape, scope_shape, self.block_grid, device,
         )
 
         H = X.T @ X / X.shape[0]
         C = LA.inv(H + damp * torch.eye(K, device=device))
-        self.C = C.unsqueeze(0).expand(self.num_group_rows, -1, -1).clone()
+        self.C = C.unsqueeze(0).expand(self.num_scope_rows, -1, -1).clone()
 
-        self.pruned = torch.zeros(self.num_group_rows, Bk_total, dtype=torch.bool, device=device)
+        self.pruned = torch.zeros(self.num_scope_rows, Gk_total, dtype=torch.bool, device=device)
 
         self.remaining = torch.full(
-            (self.num_group_rows, self.num_groups_per_row),
+            (self.num_scope_rows, self.num_scopes_per_row),
             self.num_prune, dtype=torch.long, device=device,
         )
 
     def _gather_C_block(self, cols):
-        """Extract C[r, cols, :][:, cols] for all group rows."""
-        R, K, bk = self.num_group_rows, self.K, self.bk
+        """Extract C[r, cols, :][:, cols] for all block rows."""
+        R, K, bk = self.num_scope_rows, self.K, self.bk
         row_idx = cols.unsqueeze(-1).expand(-1, -1, K)
         C_rows = torch.gather(self.C, 1, row_idx)
         col_idx = cols.unsqueeze(1).expand(-1, bk, -1)
@@ -161,19 +161,19 @@ class StructuredOBS:
         return C_pp, C_rows
 
     def compute_scores(self):
-        """Vectorized OBS scores for all (group_row, block_col) pairs."""
-        R, bk, device = self.num_group_rows, self.bk, self.W.device
+        """Vectorized OBS scores for all (block_row, group_col) pairs."""
+        R, bk, device = self.num_scope_rows, self.bk, self.W.device
 
         W_rows = self.W.data.view(R, self.rows_per_group, self.K)
         ci = self.col_idx.unsqueeze(0).unsqueeze(0).expand(R, self.rows_per_group, -1, -1)
         W_p = torch.gather(
-            W_rows.unsqueeze(2).expand(-1, -1, self.Bk_total, -1), 3, ci,
+            W_rows.unsqueeze(2).expand(-1, -1, self.Gk_total, -1), 3, ci,
         )
 
         ci_all = self.col_idx.unsqueeze(0).expand(R, -1, -1)
         ci_row = ci_all.unsqueeze(-1).expand(-1, -1, -1, self.K)
         C_rows = torch.gather(
-            self.C.unsqueeze(1).expand(-1, self.Bk_total, -1, -1), 2, ci_row,
+            self.C.unsqueeze(1).expand(-1, self.Gk_total, -1, -1), 2, ci_row,
         )
         ci_col = ci_all.unsqueeze(2).expand(-1, -1, bk, -1)
         C_pp = torch.gather(C_rows, 3, ci_col)
@@ -187,8 +187,8 @@ class StructuredOBS:
         return scores
 
     def batch_update(self, selections):
-        """OBS weight update + Schur complement for all group rows."""
-        R, bk, K, device = self.num_group_rows, self.bk, self.K, self.W.device
+        """OBS weight update + Schur complement for all block rows."""
+        R, bk, K, device = self.num_scope_rows, self.bk, self.K, self.W.device
 
         active = selections >= 0
         if not active.any():
@@ -227,18 +227,18 @@ class StructuredOBS:
                 self.C[r_active, :, active_cols[:, b]] = 0.0
 
         self.pruned[r_active, sel[r_active]] = True
-        active_groups = self.block_to_group[sel[r_active]]
+        active_groups = self.block_to_scope[sel[r_active]]
         self.remaining[r_active, active_groups] -= 1
 
     def prune(self):
         """Greedy structured OBS."""
-        total_prunes = self.num_prune * self.num_groups_per_row
+        total_prunes = self.num_prune * self.num_scopes_per_row
         for step in range(total_prunes):
             scores = self.compute_scores()
 
             group_done = self.remaining <= 0
-            block_group_done = group_done[:, self.block_to_group]
-            scores[block_group_done] = float("inf")
+            scope_group_done = group_done[:, self.block_to_scope]
+            scores[scope_group_done] = float("inf")
 
             selections = scores.argmin(dim=1)
             all_done = (scores == float("inf")).all(dim=1)
@@ -250,11 +250,11 @@ class StructuredOBS:
             self.batch_update(selections)
 
 
-# ─── SparseGPT adapted to our block/group structure ─────────────────────
+# ─── SparseGPT adapted to our group/block structure ─────────────────────
 
 class SparseGPTBlockPruner:
     """
-    SparseGPT-style pruner adapted to arbitrary BlockView structure.
+    SparseGPT-style pruner adapted to arbitrary GroupView structure.
 
     Key differences from true OBS (StructuredOBS):
       1. Uses Cholesky(H^{-1}) instead of full H^{-1} + Schur complement.
@@ -262,52 +262,52 @@ class SparseGPTBlockPruner:
          column ordering: column i is "processed" using L^T[i,i] as
          the effective inverse-Hessian diagonal and L^T[i, i+1:] for
          error propagation to later columns.
-      2. One-shot block selection: within each group, scores are computed
+      2. One-shot group selection: within each block, scores are computed
          once from W^2 / diag(Hinv)^2 and pruning decisions are made
          without re-scoring.
       3. Sequential column processing: columns are processed left-to-right,
          errors propagate forward only.  No global Schur complement update.
 
     This means SparseGPT's quality depends on the column ordering aligning
-    well with the Cholesky factorization. For non-contiguous block patterns
+    well with the Cholesky factorization. For non-contiguous group patterns
     (like our strided view), this ordering may be suboptimal.
     """
 
-    def __init__(self, W, view, block_shape, group_shape, nnz, X, damp=1e-4):
+    def __init__(self, W, view, group_shape, scope_shape, nnz, X, damp=1e-4):
         M, K = W.shape
         self.M, self.K = M, K
         self.W = W
         self.view = view
-        self.block_shape = tuple(block_shape)
         self.group_shape = tuple(group_shape)
+        self.scope_shape = tuple(scope_shape)
         self.nnz = nnz
         device = W.device
 
-        self.grid_shape = tuple(s // b for s, b in zip(view.shape, block_shape))
-        self.group_grid = tuple(g // gg for g, gg in zip(self.grid_shape, group_shape))
+        self.grid_shape = tuple(s // b for s, b in zip(view.shape, group_shape))
+        self.block_grid = tuple(g // gg for g, gg in zip(self.grid_shape, scope_shape))
 
-        self.blocks_per_group = 1
-        for gs in group_shape:
-            self.blocks_per_group *= gs
-        self.num_prune = self.blocks_per_group - nnz
+        self.blocks_per_scope = 1
+        for gs in scope_shape:
+            self.blocks_per_scope *= gs
+        self.num_prune = self.blocks_per_scope - nnz
 
-        col_idx_full = block_col_indices(view, block_shape, device=device)
-        Bk_total = 1
+        col_idx_full = block_col_indices(view, group_shape, device=device)
+        Gk_total = 1
         for g in self.grid_shape[1:]:
-            Bk_total *= g
+            Gk_total *= g
         self.bk = col_idx_full.shape[-1]
-        self.col_idx = col_idx_full[0].reshape(Bk_total, self.bk)
-        self.Bk_total = Bk_total
+        self.col_idx = col_idx_full[0].reshape(Gk_total, self.bk)
+        self.Gk_total = Gk_total
 
-        self.rows_per_group = self.group_shape[0] * self.block_shape[0]
-        self.num_group_rows = self.group_grid[0]
+        self.rows_per_group = group_shape[0] * scope_shape[0]
+        self.num_scope_rows = self.block_grid[0]
 
-        self.num_groups_per_row = 1
-        for gg in self.group_grid[1:]:
-            self.num_groups_per_row *= gg
+        self.num_scopes_per_row = 1
+        for gg in self.block_grid[1:]:
+            self.num_scopes_per_row *= gg
 
-        self.block_to_group, _ = build_group_mapping(
-            self.grid_shape, self.group_shape, self.group_grid, device,
+        self.block_to_scope, _ = build_block_mapping(
+            self.grid_shape, scope_shape, self.block_grid, device,
         )
 
         # Compute Hinv = upper Cholesky of H^{-1}, exactly as SparseGPT does
@@ -326,60 +326,60 @@ class SparseGPTBlockPruner:
         self.Hinv = LA.cholesky(Hinv_full, upper=True)  # (K, K) upper triangular
 
         # pruned mask
-        self.pruned = torch.zeros(self.num_group_rows, Bk_total, dtype=torch.bool, device=device)
+        self.pruned = torch.zeros(self.num_scope_rows, Gk_total, dtype=torch.bool, device=device)
 
     def prune(self):
         """
-        SparseGPT fasterprune adapted to our block/group structure.
+        SparseGPT fasterprune adapted to our group/block structure.
 
-        For each group, one-shot select which blocks to prune based on
+        For each block, one-shot select which groups to prune based on
         W^2 / diag(Hinv)^2 scores, then process columns sequentially
         propagating errors via the Cholesky factor.
         """
         device = self.W.device
-        R = self.num_group_rows
+        R = self.num_scope_rows
         K = self.K
         bk = self.bk
 
         W = self.W.data.clone().float()  # (M, K)
         Hinv = self.Hinv  # (K, K) upper triangular
 
-        # ── Step 1: compute block scores and decide pruning mask ──
+        # ── Step 1: compute group scores and decide pruning mask ──
         # SparseGPT scores: for each element, w^2 / (Hinv[i,i])^2
-        # For blocks: sum over the block's elements
+        # For groups: sum over the group's elements
         diag_Hinv = torch.diag(Hinv)  # (K,)
 
-        # Score per block = sum_{c in block_cols} sum_{r in rows} W[r,c]^2 / Hinv[c,c]^2
+        # Score per group = sum_{c in block_cols} sum_{r in rows} W[r,c]^2 / Hinv[c,c]^2
         # W_rows: (R, rows_per_group, K)
         W_rows = W.view(R, self.rows_per_group, K)
 
-        # Gather per-block weights: (R, rows_per_group, Bk_total, bk)
+        # Gather per-group weights: (R, rows_per_group, Gk_total, bk)
         ci = self.col_idx.unsqueeze(0).unsqueeze(0).expand(R, self.rows_per_group, -1, -1)
         W_p = torch.gather(
-            W_rows.unsqueeze(2).expand(-1, -1, self.Bk_total, -1), 3, ci,
+            W_rows.unsqueeze(2).expand(-1, -1, self.Gk_total, -1), 3, ci,
         )
 
-        # Gather per-block diag(Hinv): (Bk_total, bk)
-        diag_p = diag_Hinv[self.col_idx]  # (Bk_total, bk)
+        # Gather per-group diag(Hinv): (Gk_total, bk)
+        diag_p = diag_Hinv[self.col_idx]  # (Gk_total, bk)
 
-        # Block score = sum over (rows, bk) of W_p^2 / diag_p^2
-        scores = (W_p ** 2 / (diag_p.unsqueeze(0).unsqueeze(0) ** 2)).sum(dim=(1, 3))  # (R, Bk_total)
+        # Group score = sum over (rows, bk) of W_p^2 / diag_p^2
+        scores = (W_p ** 2 / (diag_p.unsqueeze(0).unsqueeze(0) ** 2)).sum(dim=(1, 3))  # (R, Gk_total)
 
-        # For each group, prune the num_prune lowest-score blocks
-        for g in range(self.num_groups_per_row):
-            in_group = (self.block_to_group == g)
-            group_scores = scores[:, in_group]  # (R, blocks_per_group)
-            _, bot_idx = group_scores.topk(self.num_prune, dim=1, largest=False)
+        # For each block, prune the num_prune lowest-score groups
+        for g in range(self.num_scopes_per_row):
+            in_group = (self.block_to_scope == g)
+            block_scores = scores[:, in_group]  # (R, blocks_per_scope)
+            _, bot_idx = block_scores.topk(self.num_prune, dim=1, largest=False)
             group_block_indices = torch.where(in_group)[0]
             prune_idx = group_block_indices[bot_idx]
             row_idx = torch.arange(R, device=device).unsqueeze(1).expand_as(prune_idx)
             self.pruned[row_idx, prune_idx] = True
 
         # ── Step 2: build per-row element-level mask ──
-        # mask[r, k] = True if column k should be zeroed for group row r
-        # Each group row has its own pattern since different blocks may be pruned
+        # mask[r, k] = True if column k should be zeroed for block row r
+        # Each block row has its own pattern since different groups may be pruned
         mask = torch.zeros(R, K, dtype=torch.bool, device=device)
-        pruned_cols_all = self.col_idx.unsqueeze(0).expand(R, -1, -1)  # (R, Bk_total, bk)
+        pruned_cols_all = self.col_idx.unsqueeze(0).expand(R, -1, -1)  # (R, Gk_total, bk)
         pruned_exp = self.pruned.unsqueeze(-1).expand_as(pruned_cols_all)
         # Scatter True into mask
         mask.scatter_(1, pruned_cols_all[pruned_exp].view(R, -1)
@@ -388,9 +388,9 @@ class SparseGPTBlockPruner:
                       True)
         # Build mask properly: for each (r, p) where pruned, mark col_idx[p] in mask[r]
         for r in range(R):
-            pruned_blocks = torch.where(self.pruned[r])[0]
-            if pruned_blocks.numel() > 0:
-                cols = self.col_idx[pruned_blocks].reshape(-1)
+            pruned_scopes = torch.where(self.pruned[r])[0]
+            if pruned_scopes.numel() > 0:
+                cols = self.col_idx[pruned_scopes].reshape(-1)
                 mask[r, cols] = True
 
         # ── Step 3: SparseGPT sequential column processing ──
@@ -425,51 +425,51 @@ class SparseGPTBlockPruner:
 
 # ─── Magnitude pruning baseline ─────────────────────────────────────────
 
-def magnitude_prune(W0, view, block_shape, group_shape, nnz, device="cpu"):
-    """Keep the `nnz` highest-norm blocks per group, zero the rest."""
+def magnitude_prune(W0, view, group_shape, scope_shape, nnz, device="cpu"):
+    """Keep the `nnz` highest-norm groups per scope, zero the rest."""
     W = W0.clone()
     M, K = W.shape
 
-    grid_shape = tuple(s // b for s, b in zip(view.shape, block_shape))
-    group_grid = tuple(g // gg for g, gg in zip(grid_shape, group_shape))
+    grid_shape = tuple(s // b for s, b in zip(view.shape, group_shape))
+    block_grid = tuple(g // gg for g, gg in zip(grid_shape, scope_shape))
 
-    Bk_total = 1
+    Gk_total = 1
     for g in grid_shape[1:]:
-        Bk_total *= g
+        Gk_total *= g
 
-    col_idx = block_col_indices(view, block_shape, device=device)[0].reshape(Bk_total, -1)
+    col_idx = block_col_indices(view, group_shape, device=device)[0].reshape(Gk_total, -1)
 
-    rows_per_group = group_shape[0] * block_shape[0]
-    num_group_rows = group_grid[0]
+    rows_per_group = group_shape[0] * scope_shape[0]
+    num_scope_rows = block_grid[0]
 
-    block_to_group, _ = build_group_mapping(grid_shape, group_shape, group_grid, device)
-    num_groups_per_row = 1
-    for gg in group_grid[1:]:
-        num_groups_per_row *= gg
-    blocks_per_group = 1
-    for gs in group_shape:
-        blocks_per_group *= gs
+    block_to_scope, _ = build_block_mapping(grid_shape, scope_shape, block_grid, device)
+    num_scopes_per_row = 1
+    for gg in block_grid[1:]:
+        num_scopes_per_row *= gg
+    blocks_per_scope = 1
+    for gs in scope_shape:
+        blocks_per_scope *= gs
 
-    # Block norms: (R, Bk_total)
-    W_rows = W.view(num_group_rows, rows_per_group, K)
-    ci = col_idx.unsqueeze(0).unsqueeze(0).expand(num_group_rows, rows_per_group, -1, -1)
-    W_p = torch.gather(W_rows.unsqueeze(2).expand(-1, -1, Bk_total, -1), 3, ci)
+    # Group norms: (R, Gk_total)
+    W_rows = W.view(num_scope_rows, rows_per_group, K)
+    ci = col_idx.unsqueeze(0).unsqueeze(0).expand(num_scope_rows, rows_per_group, -1, -1)
+    W_p = torch.gather(W_rows.unsqueeze(2).expand(-1, -1, Gk_total, -1), 3, ci)
     norms = W_p.norm(dim=(1, 3))
 
-    pruned_mask = torch.zeros(num_group_rows, Bk_total, dtype=torch.bool, device=device)
-    num_prune = blocks_per_group - nnz
+    pruned_mask = torch.zeros(num_scope_rows, Gk_total, dtype=torch.bool, device=device)
+    num_prune = blocks_per_scope - nnz
 
-    for g in range(num_groups_per_row):
-        in_group = (block_to_group == g)
-        group_norms = norms[:, in_group]
-        _, bot_idx = group_norms.topk(num_prune, dim=1, largest=False)
+    for g in range(num_scopes_per_row):
+        in_group = (block_to_scope == g)
+        block_norms = norms[:, in_group]
+        _, bot_idx = block_norms.topk(num_prune, dim=1, largest=False)
         group_block_indices = torch.where(in_group)[0]
         prune_idx = group_block_indices[bot_idx]
-        row_idx = torch.arange(num_group_rows, device=device).unsqueeze(1).expand_as(prune_idx)
+        row_idx = torch.arange(num_scope_rows, device=device).unsqueeze(1).expand_as(prune_idx)
         pruned_mask[row_idx, prune_idx] = True
 
-    # Zero pruned blocks
-    for r in range(num_group_rows):
+    # Zero pruned groups
+    for r in range(num_scope_rows):
         cols_to_zero = col_idx[pruned_mask[r]].reshape(-1).unique()
         if cols_to_zero.numel() > 0:
             row_s = r * rows_per_group
@@ -481,12 +481,12 @@ def magnitude_prune(W0, view, block_shape, group_shape, nnz, device="cpu"):
 
 # ─── Apply a pruning mask without compensation ──────────────────────────
 
-def apply_pruned_pattern(W0, pruned, col_idx, num_group_rows, rows_per_group):
-    """Zero out W0 using the same block-pruning pattern, no compensation."""
+def apply_pruned_pattern(W0, pruned, col_idx, num_scope_rows, rows_per_group):
+    """Zero out W0 using the same group-pruning pattern, no compensation."""
     W = W0.clone()
-    pruned_cols_all = col_idx.unsqueeze(0).expand(num_group_rows, -1, -1)
+    pruned_cols_all = col_idx.unsqueeze(0).expand(num_scope_rows, -1, -1)
     pruned_exp = pruned.unsqueeze(-1).expand_as(pruned_cols_all)
-    for r in range(num_group_rows):
+    for r in range(num_scope_rows):
         cols = pruned_cols_all[r][pruned_exp[r]].unique()
         if cols.numel() > 0:
             row_s = r * rows_per_group
@@ -510,8 +510,8 @@ def main():
 
     view_size = (32, 8, 2)
     view_stride = (16, 1, 8)
-    block_shape = (1, 1, 2)
-    group_shape = (1, 4, 1)
+    group_shape = (1, 1, 2)
+    scope_shape = (1, 4, 1)
     nnz = 2
 
     # ── Verify view mapping ──
@@ -523,15 +523,15 @@ def main():
                 assert torch.isclose(v[i, j, k], W.data[i, j + 8 * k])
     print("View mapping verified: view[i,j,k] = W[i, j+8k]")
 
-    col_idx = block_col_indices(view, block_shape, device=device)
-    grid_shape = tuple(s // b for s, b in zip(view_size, block_shape))
+    col_idx = block_col_indices(view, group_shape, device=device)
+    grid_shape = tuple(s // b for s, b in zip(view_size, group_shape))
     for j in range(8):
         cols = col_idx[0, j, 0].sort().values.tolist()
-        assert cols == sorted([j, j + 8]), f"Block (0,{j},0): got {cols}"
-    print(f"Block column indices verified, grid={grid_shape}")
+        assert cols == sorted([j, j + 8]), f"Group (0,{j},0): got {cols}"
+    print(f"Group column indices verified, grid={grid_shape}")
 
-    group_grid = tuple(g // gg for g, gg in zip(grid_shape, group_shape))
-    print(f"Group grid: {group_grid}, blocks_per_group=4, nnz={nnz}")
+    block_grid = tuple(g // gg for g, gg in zip(grid_shape, scope_shape))
+    print(f"Block grid: {block_grid}, blocks_per_scope=4, nnz={nnz}")
 
     Y0 = X @ W0.T
 
@@ -539,8 +539,8 @@ def main():
     W_obs = torch.nn.Parameter(W0.clone())
     view_obs = View(W_obs, shape=view_size, stride=view_stride)
     solver = StructuredOBS(
-        W=W_obs, view=view_obs, block_shape=block_shape,
-        group_shape=group_shape, nnz=nnz, X=X, damp=1e-4,
+        W=W_obs, view=view_obs, group_shape=group_shape,
+        scope_shape=scope_shape, nnz=nnz, X=X, damp=1e-4,
     )
     solver.prune()
     loss_obs = ((X @ W_obs.data.T - Y0) ** 2).sum().item()
@@ -549,28 +549,28 @@ def main():
     W_sgpt = torch.nn.Parameter(W0.clone())
     view_sgpt = View(W_sgpt, shape=view_size, stride=view_stride)
     sgpt = SparseGPTBlockPruner(
-        W=W_sgpt, view=view_sgpt, block_shape=block_shape,
-        group_shape=group_shape, nnz=nnz, X=X, damp=1e-4,
+        W=W_sgpt, view=view_sgpt, group_shape=group_shape,
+        scope_shape=scope_shape, nnz=nnz, X=X, damp=1e-4,
     )
     sgpt.prune()
     loss_sgpt = ((X @ W_sgpt.data.T - Y0) ** 2).sum().item()
 
     # ── 3. Magnitude ──
     view_mag = View(torch.nn.Parameter(W0.clone()), shape=view_size, stride=view_stride)
-    W_mag = magnitude_prune(W0, view_mag, block_shape, group_shape, nnz, device=device)
+    W_mag = magnitude_prune(W0, view_mag, group_shape, scope_shape, nnz, device=device)
     loss_mag = ((X @ W_mag.T - Y0) ** 2).sum().item()
 
     # ── 4. Naive zero (OBS pattern, no compensation) ──
     W_naive = apply_pruned_pattern(
         W0, solver.pruned, solver.col_idx,
-        solver.num_group_rows, solver.rows_per_group,
+        solver.num_scope_rows, solver.rows_per_group,
     )
     loss_naive = ((X @ W_naive.T - Y0) ** 2).sum().item()
 
     # ── 5. Naive zero (SparseGPT pattern, no compensation) ──
     W_sgpt_naive = apply_pruned_pattern(
         W0, sgpt.pruned, sgpt.col_idx,
-        sgpt.num_group_rows, sgpt.rows_per_group,
+        sgpt.num_scope_rows, sgpt.rows_per_group,
     )
     loss_sgpt_naive = ((X @ W_sgpt_naive.T - Y0) ** 2).sum().item()
 
@@ -592,12 +592,12 @@ def main():
     print("\n--- Sparsity verification ---")
     for label, pruner in [("OBS", solver), ("SparseGPT", sgpt)]:
         ok = True
-        for g in range(pruner.num_groups_per_row):
-            in_group = (pruner.block_to_group == g)
+        for g in range(pruner.num_scopes_per_row):
+            in_group = (pruner.block_to_scope == g)
             cnt = pruner.pruned[:, in_group].sum(dim=1)
             if not (cnt == pruner.num_prune).all():
                 ok = False
-        print(f"  {label}: {pruner.num_prune} pruned per group in every row: {ok}")
+        print(f"  {label}: {pruner.num_prune} pruned per block in every row: {ok}")
 
     # ── Analysis ──
     print("\n--- Analysis ---")

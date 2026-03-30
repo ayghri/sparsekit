@@ -1,9 +1,16 @@
-# Copyright (c) 2025 Anonymous Authors
-# Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
+# Copyright (c) 2026 - Ayoub Ghriss & Contributors
+# Licensed under CC BY-NC 4.0
+# (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
 # Non-commercial use only; contact us for commercial licensing.
 """Linear algebra utilities for sparse optimization."""
 
 import torch
+
+
+def _norm(x, **kwargs):
+    """Wrapper around torch.linalg.norm."""
+    # pylint: disable=not-callable
+    return torch.linalg.norm(x, **kwargs)
 
 
 def lsqr_gkl(
@@ -15,8 +22,9 @@ def lsqr_gkl(
     device: torch.device | None = None,
 ):
     """
-    Solves the linear least-squares problem min ||Ax - b||_2 using the LSQR algorithm,
-    leveraging PyTorch for GPU and Golub-Kahan-Lanczos bidiagonalization.
+    Solves min ||Ax - b||_2 using the LSQR algorithm,
+    leveraging PyTorch for GPU and Golub-Kahan-Lanczos
+    bidiagonalization.
 
     Args:
         A: The matrix A (torch.Tensor).
@@ -45,9 +53,9 @@ def lsqr_gkl(
     else:
         x = x_0.to(device)
     # initial residual
-    norm_b = torch.linalg.norm(b)
+    norm_b = _norm(b)
     r = b - A @ x
-    beta = torch.linalg.norm(r)
+    beta = _norm(r)
 
     if beta == 0:
         return x, {
@@ -61,7 +69,7 @@ def lsqr_gkl(
 
     # Initial Lanczos vector v1
     v = A.t() @ u
-    alpha = torch.linalg.norm(v)
+    alpha = _norm(v)
 
     if alpha == 0:
         return x, {
@@ -88,14 +96,14 @@ def lsqr_gkl(
         # bidiagonalization step (Golub-Kahan)
         u_prev = u
         u = A @ v - alpha * u_prev
-        beta = torch.linalg.norm(u)
+        beta = _norm(u)
         if beta == 0:
             break
         u = u / beta
 
         v_prev = v
         v = A.t() @ u - beta * v_prev
-        alpha = torch.linalg.norm(v)
+        alpha = _norm(v)
         if alpha == 0:
             break
         v = v / alpha
@@ -139,7 +147,9 @@ def lsqr_gkl(
     }
 
 
-def hard_threshold(vec: torch.Tensor, alpha: torch.Tensor, k: int) -> torch.Tensor:
+def hard_threshold(
+    vec: torch.Tensor, alpha: torch.Tensor, k: int
+) -> torch.Tensor:
     """Keep the k largest elements of vec, selected by magnitude of alpha.
 
     Args:
@@ -158,7 +168,9 @@ def hard_threshold(vec: torch.Tensor, alpha: torch.Tensor, k: int) -> torch.Tens
     return result
 
 
-def soft_threshold(vec: torch.Tensor, threshold: torch.Tensor | float) -> torch.Tensor:
+def soft_threshold(
+    vec: torch.Tensor, threshold: torch.Tensor | float
+) -> torch.Tensor:
     """Element-wise soft-thresholding: ``sign(x) * max(abs(x) - threshold, 0)``.
 
     Args:
@@ -176,52 +188,62 @@ def soft_threshold(vec: torch.Tensor, threshold: torch.Tensor | float) -> torch.
 @torch.no_grad()
 def solve_proximal_adam(
     v_elements: torch.Tensor,
-    H_elements: torch.Tensor,
+    hessian_elements: torch.Tensor,
     thresholds: torch.Tensor,
     eps: float = 1e-6,
     max_iter: int = 10,
 ) -> torch.Tensor:
-    """
-    Solves for the scalar mu in the Proximal Adam equation using Bisection search.
+    """Solve for mu in the Proximal Adam equation.
+
+    Uses bisection search.
 
     Args:
-        v_elements: Shape (s1,s2,...,sm). The dense weights (or updates).
-        H_elements: Shape (s1,s2,...,sm). The Adam preconditioner (sqrt(v) + eps).
-        thresholds: Shape (num_blocks). The target value (eta * lambda).
+        v_elements: Shape (s1,s2,...,sm).
+            The dense weights (or updates).
+        hessian_elements: Shape (s1,s2,...,sm).
+            The Adam preconditioner (sqrt(v) + eps).
+        thresholds: Shape (num_blocks).
+            The target value (eta * lambda).
 
     Returns:
         mu: Shape (Num_Groups, 1). The scaling factor.
     """
     # 1. Compute Norms ||H * v||_2
-    Hv = H_elements * v_elements
-    # Hv_norms = torch.linalg.norm(Hv, dim=1, keepdim=True)  # (G, 1)
-    Hv_norms = torch.linalg.norm(Hv)
+    hess_weighted = hessian_elements * v_elements
+    hess_weighted_norms = _norm(hess_weighted)
 
     # 2. Identify Survivors
-    # If ||Hv|| <= threshold, the optimal weight is 0. We only solve for the rest.
-    # We add a small epsilon to threshold to avoid division by zero in bounds calculation
-    is_survivor = Hv_norms > thresholds
+    # If ||Hv|| <= threshold, the optimal weight is 0.
+    # We only solve for the rest. We add a small epsilon
+    # to threshold to avoid division by zero.
+    is_survivor = hess_weighted_norms > thresholds
 
     # Prepare output
-    mu_solutions = torch.zeros_like(Hv_norms)
+    mu_solutions = torch.zeros_like(hess_weighted_norms)
 
-    # Filter to active groups to save compute
-    indices = torch.nonzero(is_survivor.squeeze()).squeeze()
+    # Filter to active blocks to save compute
+    indices = torch.nonzero(
+        is_survivor.squeeze()
+    ).squeeze()
     if indices.numel() == 0:
         return mu_solutions  # All zero
 
     v_active = v_elements[indices]
-    M_active = H_elements[indices]
+    mask_active = hessian_elements[indices]
     thresh_active = thresholds[indices]
-    norm_active = Hv_norms[indices]
+    norm_active = hess_weighted_norms[indices]
 
     # 3. Compute Bounds (from the derivation)
     # S = ||Hv||^2, so sqrt(S) = norm_active
     # mu_low = (lambda * h_min) / (sqrt(S) - lambda)
     denom = norm_active - thresh_active + eps
 
-    h_min = M_active.min(dim=1, keepdim=True).values
-    h_max = M_active.max(dim=1, keepdim=True).values
+    h_min = mask_active.min(
+        dim=1, keepdim=True
+    ).values
+    h_max = mask_active.max(
+        dim=1, keepdim=True
+    ).values
 
     mu_low = (thresh_active * h_min) / denom
     mu_high = (thresh_active * h_max) / denom
@@ -237,11 +259,11 @@ def solve_proximal_adam(
 
         # Compute Zeta(mu)
         # scaling vector = M / (M + mu)
-        scaling = M_active / (M_active + mu)
+        scaling = mask_active / (mask_active + mu)
 
         # weighted_v = scaling * v
         # zeta = mu * ||weighted_v||
-        weighted_norm = torch.linalg.norm(
+        weighted_norm = _norm(
             scaling * v_active, dim=1, keepdim=True
         )
         zeta = mu * weighted_norm

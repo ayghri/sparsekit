@@ -1,3 +1,6 @@
+# Copyright (c) 2026 - Ayoub Ghriss & Contributors
+# Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
+# Non-commercial use only; contact us for commercial licensing.
 """
 Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
 Non-commercial use only; contact us for commercial licensing.
@@ -76,12 +79,12 @@ def measure(
     It returns the time taken and can optionally print it to the console.
 
     Args:
-        name (str): The description of the code block being measured.
+        name (str): The description of the code group being measured.
         verbose (bool): If True (the default), prints the execution time.
 
     Yields:
         TimeContainer: A container object that will be updated with the
-        measured time in seconds after the block completes.
+        measured time in seconds after the group completes.
     """
     start_time = time.perf_counter()
     time_container = TimeContainer(name)

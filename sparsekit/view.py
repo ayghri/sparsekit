@@ -1,5 +1,6 @@
-# Copyright (c) 2025 Anonymous Authors
-# Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
+# Copyright (c) 2026 - Ayoub Ghriss & Contributors
+# Licensed under CC BY-NC 4.0
+# (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
 # Non-commercial use only; contact us for commercial licensing.
 """Strided parameter views with write-through to original storage."""
 
@@ -22,9 +23,9 @@ class View:
 
     Workflow::
 
-        view  = BlockView(param, shape, stride)
-        block = BlockSpec(view, block_shape=...)
-        group = GroupSpec(block, group_shape=...)
+        view  = View(param, shape, stride)
+        group = BlockSpec(view, block_shape=...)
+        block = ScopeSpec(group, block_shape=...)
         # ... pruning / thresholding -- writes go to param directly ...
 
     Args:
@@ -48,7 +49,7 @@ class View:
 
     @classmethod
     def from_existing(cls, param: "Tensor | Parameter | View") -> "View":
-        """Wrap a Parameter or pass through an existing BlockView."""
+        """Wrap a Parameter or pass through an existing View."""
         if isinstance(param, View):
             return param
         return cls(
@@ -86,13 +87,13 @@ class View:
         reorder: bool = True,
         merge: bool = False,
     ) -> Tensor:
-        """Block-structured view of *t* via ``as_strided``.
+        """Group-structured view of *t* via ``as_strided``.
 
         Args:
             t: Tensor of shape ``(s0, s1, …, sm)``.
             block_shape: ``(b0, b1, …, bm)`` with ``si % bi == 0``.
-            reorder: Permute grid dims before block dims.
-            merge: Flatten block dims into a single trailing dim
+            reorder: Permute grid dims before group dims.
+            merge: Flatten group dims into a single trailing dim
                    (implies *reorder*).
 
         Returns:
@@ -136,7 +137,7 @@ class View:
 
         Args:
             block_values: ``(B0, B1, …)`` grid tensor.
-            block_shape: ``(b0, b1, …)`` block shape.
+            block_shape: ``(b0, b1, …)`` group shape.
             fake: If True only unsqueeze (for broadcasting against
                   an interleaved view) without expanding.
 
@@ -151,7 +152,8 @@ class View:
                 t = t.repeat_interleave(bi, dim=2 * i + 1)
         if not fake:
             full_shape = tuple(
-                Bi * bi for Bi, bi in zip(block_values.shape, block_shape)
+                block_idx * bi
+                for block_idx, bi in zip(block_values.shape, block_shape)
             )
             t = t.reshape(full_shape)
         return t
@@ -159,11 +161,11 @@ class View:
     def apply_multiplier(
         self, multiplier: Tensor, block_shape: Tuple[int, ...]
     ):
-        """In-place multiply each block of ``self.data`` by a grid scalar.
+        """In-place multiply each group of ``self.data`` by a grid scalar.
 
         Args:
             multiplier: ``(B0, B1, …)`` grid-shaped tensor.
-            block_shape: Block shape.
+            block_shape: Group shape.
         """
         m = multiplier
         for i in range(multiplier.ndim):
@@ -172,11 +174,11 @@ class View:
         b_view.mul_(m)
 
     def apply_mask(self, mask: Tensor, block_shape: Tuple[int, ...]):
-        """Zero out blocks of ``self.data`` where *mask* is True.
+        """Zero out groups of ``self.data`` where *mask* is True.
 
         Args:
             mask: ``(B0, B1, …)`` boolean grid tensor.
-            block_shape: Block shape.
+            block_shape: Group shape.
         """
         self.apply_multiplier(~mask, block_shape)
 
@@ -203,8 +205,8 @@ class View:
         """
         assert self.param.ndim == 2, "param must be 2D"
         flat = self.linear_offset(idx)
-        K = self.param.shape[1]
-        return flat // K, flat % K
+        num_cols = self.param.shape[1]
+        return flat // num_cols, flat % num_cols
 
     def __hash__(self) -> int:
         return hash((id(self.param), self.shape, self.stride))
@@ -220,6 +222,6 @@ class View:
 
     def __repr__(self) -> str:
         return (
-            f"BlockView(param.shape={tuple(self.param.shape)}, "
+            f"View(param.shape={tuple(self.param.shape)}, "
             f"shape={self.shape}, stride={self.stride})"
         )

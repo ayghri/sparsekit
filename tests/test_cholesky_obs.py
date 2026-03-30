@@ -5,7 +5,7 @@ The Cholesky insight: if we eliminate columns LEFT-TO-RIGHT, the Schur
 complement C_new = U_{22}^T U_{22} — just drop the first row of U.
 No explicit Schur update needed.
 
-For block elimination (16 cols at a time), dropping 16 rows of U gives
+For group elimination (16 cols at a time), dropping 16 rows of U gives
 the exact updated C for the remaining columns.
 
 Question: how much quality do we lose by fixing the column order to L->R
@@ -38,11 +38,11 @@ def obs_greedy_schur(w_row, C, group_size=4, n_prune=2):
     K = w_row.shape[0]
     C = C.clone()
     w = w_row.clone()
-    num_groups = K // group_size
-    remaining = torch.full((num_groups,), n_prune, device=w.device)
+    num_scopes = K // group_size
+    remaining = torch.full((num_scopes,), n_prune, device=w.device)
     pruned = torch.zeros(K, dtype=torch.bool, device=w.device)
 
-    for step in range(n_prune * num_groups):
+    for step in range(n_prune * num_scopes):
         diag = C.diagonal()
         scores = w ** 2 / (diag.abs() + 1e-10)
         scores[pruned] = float("inf")
@@ -70,55 +70,55 @@ def obs_greedy_schur(w_row, C, group_size=4, n_prune=2):
 
 def obs_sequential_chol(w_row, C, group_size=4, n_prune=2):
     """
-    OBS with LEFT-TO-RIGHT group processing using Cholesky trick.
+    OBS with LEFT-TO-RIGHT block processing using Cholesky trick.
 
-    Process groups in order g=0, 1, 2, ..., G-1.
-    For each group, decide which n_prune elements to prune (greedy within group).
-    Use U = chol(C, upper=True). After processing a group of `group_size` cols,
+    Process blocks in order g=0, 1, 2, ..., G-1.
+    For each block, decide which n_prune elements to prune (greedy within block).
+    Use U = chol(C, upper=True). After processing a block of `group_size` cols,
     C_remaining = U[group_size:, group_size:]^T @ U[group_size:, group_size:]
     — just drop rows from U.
 
-    The within-group decisions use the full H^{-1} info (current U).
-    The across-group ordering is fixed (left-to-right).
+    The within-block decisions use the full H^{-1} info (current U).
+    The across-block ordering is fixed (left-to-right).
     """
     K = w_row.shape[0]
     U = LA.cholesky(C, upper=True).clone()
     w = w_row.clone()
-    num_groups = K // group_size
+    num_scopes = K // group_size
 
-    for g in range(num_groups):
+    for g in range(num_scopes):
         gs = g * group_size
         ge = gs + group_size
 
         # Current C for remaining columns [gs:] is U[gs:, gs:]^T @ U[gs:, gs:]
-        # We only need the group_size × group_size block for within-group scoring
-        # and the group_size × (K-gs) block for compensation.
+        # We only need the group_size × group_size group for within-block scoring
+        # and the group_size × (K-gs) group for compensation.
         U_active = U[gs:, gs:]  # (K-gs, K-gs) upper triangular
 
-        # Extract the group block: first group_size columns of U_active
+        # Extract the block group: first group_size columns of U_active
         # C_group = U_active^T @ U_active restricted to first group_size cols
         U_grp = U_active[:, :group_size]  # (K-gs, group_size)
 
         # C_gg[i,j] = (U_grp^T @ U_grp)[i,j] for i,j in [0, group_size)
-        # But we need per-element OBS within this group.
+        # But we need per-element OBS within this block.
 
-        # For greedy within-group: iterate n_prune times
-        # Maintain a local "active" mask within the group
+        # For greedy within-block: iterate n_prune times
+        # Maintain a local "active" mask within the block
         local_pruned = torch.zeros(group_size, dtype=torch.bool, device=w.device)
 
         for prune_step in range(n_prune):
-            # Diagonal of current C for columns in this group
-            # After previous eliminations within group, C has been updated
+            # Diagonal of current C for columns in this block
+            # After previous eliminations within block, C has been updated
             # We track via a local V (small, group_size cols)
 
             # Actually, let's use the exact Cholesky structure.
-            # The group columns are [gs:ge] in the original indexing,
+            # The block columns are [gs:ge] in the original indexing,
             # which are [0:group_size] in U_active.
-            # For within-group greedy, we need C[i,i] for i in group.
+            # For within-block greedy, we need C[i,i] for i in block.
             # C = U_active^T @ U_active
             # C[i,i] = ||U_active[:, i]||^2
 
-            # After pruning column i within group:
+            # After pruning column i within block:
             # C_new = C - C[:,i] C[i,:]^T / C[i,i]
             # Which corresponds to removing column i from U_active.
 
@@ -155,7 +155,7 @@ def obs_sequential_chol(w_row, C, group_size=4, n_prune=2):
 
             local_pruned[p_local] = True
 
-        # After processing this group, advance U to drop the group columns.
+        # After processing this block, advance U to drop the block columns.
         # The remaining C for columns [ge:] is:
         # U_active[group_size:, group_size:]^T @ U_active[group_size:, group_size:]
         # But U_active has been modified by the downdates. We need to

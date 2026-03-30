@@ -2,19 +2,20 @@ import pytest
 import torch
 from torch.nn import Parameter
 from sparsekit.block import BlockSpec
+from sparsekit.view import View
 from sparsekit.block import BlockCoupling
-from sparsekit.utils import ShapeMismatchError
+from sparsekit.types import ShapeMismatchError
 import math
 
 
 class TestSoftThresholdAdam:
     @pytest.fixture
     def spec_2x2(self):
-        # 2x2 tensor, single block
+        # 2x2 tensor, single group
         # Initialize with ones. Norm = 2.0
         W = torch.ones(2, 2)
         param = Parameter(W)
-        return BlockSpec(param, shape=(2, 2))
+        return BlockSpec(View.from_existing(param), shape=(2, 2))
 
     def test_adam_equivalence_to_euclidean(self, spec_2x2):
         """
@@ -79,7 +80,7 @@ class TestSoftThresholdAdam:
 
     def test_adam_high_threshold_zeros_out(self, spec_2x2):
         """
-        Test that a high threshold zeros out the block.
+        Test that a high threshold zeros out the group.
         Norm = 2. Threshold = 3.
         denom = 2 - 3 = -1.
         Should be zeroed.
@@ -126,8 +127,8 @@ class TestSoftThresholdAdam:
 
     def test_adam_multi_block_mixed(self):
         """
-        Test a tensor with multiple blocks where some survive and some don't.
-        4x4 tensor, 2x2 blocks.
+        Test a tensor with multiple groups where some survive and some don't.
+        4x4 tensor, 2x2 groups.
         """
         param = Parameter(torch.ones(4, 4))
         spec = BlockSpec(param, shape=(2, 2))
@@ -152,7 +153,7 @@ class TestSoftThresholdAdam:
 
     def test_adam_one_block_var(self):
         """
-        Test a tensor with one blocks where conditioner is not uniform
+        Test a tensor with one groups where conditioner is not uniform
         """
         # we need 1.0 = u^2 (sum_i (h_i v_i/(h_i+u))^2 )
         # since ||hv|| = (5.3125)^.5 = 2.3048 > 1.0, a solution exists
@@ -198,7 +199,7 @@ class TestSoftThresholdAdam:
 
         assert torch.allclose(spec.data, expected)
 
-    def test_adam_multi_blocks(self):
+    def test_adam_multi_scopes(self):
         v = Parameter(torch.ones(4, 2, 2))
         v.data[-1].mul_(0.9)
 
@@ -233,7 +234,7 @@ class TestBlockSpecBasics:
         p = Parameter(torch.zeros(4, 4))
         spec = BlockSpec(p, shape=(2, 2))
 
-        # 4x4 with 2x2 blocks -> 2x2 grid
+        # 4x4 with 2x2 groups -> 2x2 grid
         assert spec.grid_shape == (2, 2)
         assert spec.num_blocks == 4
         assert spec.numel() == 4
@@ -242,7 +243,7 @@ class TestBlockSpecBasics:
         p = Parameter(torch.zeros(4, 4))
         spec = BlockSpec(p, shape=(4, 4))
 
-        # Single block -> grid (1,1)
+        # Single group -> grid (1,1)
         assert spec.grid_shape == (1, 1)
         assert spec.num_blocks == 1
         assert spec.numel() == 16
@@ -269,7 +270,7 @@ class TestBlockSpecBasics:
         norms = spec.norms(spec.data)
         assert norms.shape == spec.grid_shape
 
-        # Broadcast a simple per-block multiplier and ensure shape
+        # Broadcast a simple per-group multiplier and ensure shape
         block_vals = torch.ones(spec.grid_shape)
         full = spec.broadcast_block_to_element(block_vals)
         assert full.shape == spec.view.shape
@@ -278,7 +279,7 @@ class TestBlockSpecBasics:
         p = Parameter(torch.ones(4, 4))
         spec = BlockSpec(p, shape=(2, 2))
 
-        # Mask out one block (top-left)
+        # Mask out one group (top-left)
         mask = torch.zeros(spec.grid_shape, dtype=torch.bool)
         mask[0, 0] = True
         spec.apply_mask(mask)
@@ -287,22 +288,22 @@ class TestBlockSpecBasics:
         assert torch.allclose(spec.data[0:2, 0:2], torch.zeros(2, 2))
         assert torch.allclose(spec.data[0:2, 2:4], torch.ones(2, 2))
 
-        # Now apply a multiplier on the remaining blocks
+        # Now apply a multiplier on the remaining groups
         mult = torch.ones(spec.grid_shape)
         mult[0, 1] = 2.0
         spec.apply_multiplier(mult)
 
-        # Top-right block should be scaled by 2
+        # Top-right group should be scaled by 2
         assert torch.allclose(spec.data[0:2, 2:4], torch.full((2, 2), 2.0))
 
 
 class TestSparseNodeSoftThreshold:
     def test_soft_threshold_delegates_to_euclidean_when_no_conditioners(self):
-        # Small tensor with two blocks
+        # Small tensor with two groups
         p = Parameter(torch.ones(4, 4))
         spec = BlockSpec(p, shape=(2, 2))
 
-        # Thresholds chosen so that all blocks survive partially
+        # Thresholds chosen so that all groups survive partially
         thresholds = torch.full(spec.grid_shape, 0.5)
         before = spec.data.clone()
 
@@ -317,7 +318,7 @@ class TestBlockCoupling:
     @pytest.fixture
     def coupling_simple(self):
         # Two 1x1 tensors coupled together
-        # W1 = [3.0], W2 = [4.0] -> Group Norm = 5.0
+        # W1 = [3.0], W2 = [4.0] -> Block Norm = 5.0
         p1 = Parameter(torch.tensor([[3.0]]))
         p2 = Parameter(torch.tensor([[4.0]]))
         s1 = BlockSpec(p1, shape=(1, 1))
@@ -397,11 +398,11 @@ class TestBlockCoupling:
         assert torch.allclose(s1.data, torch.zeros_like(s1.data))
         assert torch.allclose(s2.data, torch.zeros_like(s2.data))
 
-    def test_coupling_mixed_blocks(self):
+    def test_coupling_mixed_scopes(self):
         """
-        Two blocks.
-        Block 1: W1=[3], W2=[4] (Norm 5). Threshold 2.5 -> Survives (scaled 0.5).
-        Block 2: W1=[3], W2=[4] (Norm 5). Threshold 6.0 -> Dies.
+        Two groups.
+        Group 1: W1=[3], W2=[4] (Norm 5). Threshold 2.5 -> Survives (scaled 0.5).
+        Group 2: W1=[3], W2=[4] (Norm 5). Threshold 6.0 -> Dies.
 
         Tensors will be shape (2,1).
         """
@@ -421,19 +422,19 @@ class TestBlockCoupling:
 
         coupling._soft_threshold_diag_cond(thresholds, conditioners)
 
-        # First block scaled by 0.5
+        # First group scaled by 0.5
         assert torch.allclose(s1.data[0], torch.tensor([1.5]))
         assert torch.allclose(s2.data[0], torch.tensor([2.0]))
 
-        # Second block zeroed
+        # Second group zeroed
         assert torch.allclose(s1.data[1], torch.tensor([0.0]))
         assert torch.allclose(s2.data[1], torch.tensor([0.0]))
 
     def test_coupling_different_shapes(self):
         """
-        Test coupling tensors of different shapes but compatible block grids.
-        s1: (2,2), block (2,2) -> grid (1,1)
-        s2: (1,4), block (1,4) -> grid (1,1)
+        Test coupling tensors of different shapes but compatible group grids.
+        s1: (2,2), group (2,2) -> grid (1,1)
+        s2: (1,4), group (1,4) -> grid (1,1)
         """
         p1 = Parameter(torch.ones(2, 2))  # Norm 2
         p2 = Parameter(torch.ones(1, 4))  # Norm 2
@@ -462,7 +463,7 @@ class TestBlockCoupling:
         assert torch.allclose(s2.data, torch.full((1, 4), scale), atol=1e-4)
 
     def test_coupling_mismatched_block_grids_raises(self):
-        """Specs with incompatible block grids should fail during construction."""
+        """Specs with incompatible group grids should fail during construction."""
         p1 = Parameter(torch.ones(4, 4))
         p2 = Parameter(torch.ones(4, 4))
 
@@ -479,7 +480,7 @@ class TestBlockCoupling:
     def test_coupling_apply_mask_and_multiplier(self, coupling_simple):
         coupling, s1, s2 = coupling_simple
 
-        # Mask out first block
+        # Mask out first group
         mask = torch.tensor([True]).reshape(coupling.grid_shape)
         coupling.apply_mask(mask)
         assert torch.allclose(s1.data, torch.zeros_like(s1.data))
@@ -493,11 +494,11 @@ class TestBlockCoupling:
         assert torch.allclose(s1.data, torch.full_like(s1.data, 2.0))
         assert torch.allclose(s2.data, torch.full_like(s2.data, 4.0))
 
-    def test_coupling_mixed_blocks_3d(self):
+    def test_coupling_mixed_scopes_3d(self):
         """
-        Two blocks.
-        Block 1: W1=[3], W2=[4] (Norm 5). Threshold 2.5 -> Survives (scaled 0.5).
-        Block 2: W1=[3], W2=[4] (Norm 5). Threshold 6.0 -> Dies.
+        Two groups.
+        Group 1: W1=[3], W2=[4] (Norm 5). Threshold 2.5 -> Survives (scaled 0.5).
+        Group 2: W1=[3], W2=[4] (Norm 5). Threshold 6.0 -> Dies.
 
         Tensors will be shape (2,1).
         """
@@ -519,10 +520,10 @@ class TestBlockCoupling:
 
         coupling.soft_threshold(thresholds, conditioners)
 
-        # First block scaled by 0.5
+        # First group scaled by 0.5
         assert torch.allclose(p1.data - 0.5528, torch.zeros_like(p1), atol=1e-4)
 
-        # Second block zeroed
+        # Second group zeroed
         assert torch.allclose(
             p2.data - 0.27645, torch.zeros_like(p2), atol=1e-4
         )

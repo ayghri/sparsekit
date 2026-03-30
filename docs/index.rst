@@ -22,10 +22,9 @@ no weight copies are made.
    :caption: API Reference
 
    api/views
-   api/block
-   api/groups
+   api/blocks
+   api/scope
    api/builder
    api/obs
    api/linalg
-   api/utils
    api/abstracts

@@ -16,7 +16,7 @@ Then open **http://localhost:8000** in your browser.
 
 The documentation covers:
 
-- **Quickstart** — install, construct a `GroupSpec`, prune with `StructuredOBS`
+- **Quickstart** — install, construct a `BlockSpec`, prune with `StructuredOBS`
 - **Concepts** — View, Block, Group, Coupling explained with examples
 - **API Reference** — full docstrings for every public class and function
 - **Results** — single-layer and end-to-end benchmark tables
@@ -26,8 +26,8 @@ The documentation covers:
 ```
 sparsekit/
 ├── view.py        # View  — zero-copy strided parameter wrapper (torch.as_strided)
-├── block.py       # BlockSpec / BlockCoupling — atomic sparsity unit
-├── group.py       # GroupSpec / GroupCoupling — sparsity decision scope
+├── group.py       # BlockSpec / BlockCoupling — atomic pruning unit
+├── partition.py   # ScopeSpec / ScopeCoupling — decision scope
 ├── linalg.py      # Utility solvers (LSQR, proximal, thresholds)
 ├── utils.py       # kth_largest, layout helpers
 ├── kernels.py     # Triton kernels (auto-dispatched for large K/k)
@@ -44,7 +44,7 @@ sparsekit/
 ```python
 import torch
 from torch.nn import Parameter
-from sparsekit import View, BlockSpec, GroupSpec, StructuredOBS
+from sparsekit import View, BlockSpec, ScopeSpec, StructuredOBS
 
 M, K = 2560, 9728
 W = Parameter(torch.randn(M, K, device="cuda"))
@@ -52,16 +52,16 @@ X = torch.randn(1024, K, device="cuda")          # calibration inputs
 
 # Express 2:4 sparsity
 v     = View.from_existing(W)
-block = BlockSpec(v, shape=(1, 1))
-group = GroupSpec(block, shape=(1, 4))
+group = BlockSpec(v, shape=(1, 1))
+part  = ScopeSpec(group, shape=(1, 4))
 
 # Prune with Structured OBS
-H   = (X.T @ X) / X.shape[0]
-obs = StructuredOBS(group, H)
+hessian = (X.T @ X) / X.shape[0]
+obs     = StructuredOBS(part, hessian)
 obs.prune_true_obs(num_nz=2)                     # keep 2 of 4, in-place
 ```
 
-Any of the four experimental patterns replaces the three `View/BlockSpec/GroupSpec`
+Any of the four experimental patterns replaces the three `View/BlockSpec/ScopeSpec`
 lines above; the `StructuredOBS` call is identical.
 
 ## Requirements

@@ -1,19 +1,30 @@
+# Copyright (c) 2026 - Ayoub Ghriss & Contributors
+# Licensed under CC BY-NC 4.0
+# (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
+# Non-commercial use only; contact us for commercial licensing.
+# type: ignore [reachability]
 """Triton kernels for k-th largest selection.
 
 Uses tl.topk for efficient partial sort — only materializes k values
 instead of sorting the full dimension.
 
 Five operations with auto-dispatch based on (K, k):
-  - kth_largest: auto-dispatches to torch, single-load triton, or streaming triton
-  - mid_kth_largest: auto-dispatches to torch, single-load triton, or streaming triton
-  - streaming_kth_largest: chunked topk via join+reshape merge (direct access)
-  - streaming_mid_kth_largest: chunked midpoint via join+reshape merge (direct access)
-  - radix_kth_largest: chunked topk via radix-key tl.maximum merge (direct access)
+  - kth_largest: auto-dispatches to torch,
+    single-load triton, or streaming triton
+  - mid_kth_largest: auto-dispatches to torch,
+    single-load triton, or streaming triton
+  - streaming_kth_largest: chunked topk via
+    join+reshape merge (direct access)
+  - streaming_mid_kth_largest: chunked midpoint
+    via join+reshape merge (direct access)
+  - radix_kth_largest: chunked topk via
+    radix-key tl.maximum merge (direct access)
 """
 
 import torch
 import triton
 import triton.language as tl
+import math
 from torch import Tensor
 
 # ── Dispatch thresholds (from benchmarks on A100) ──────────────────────
@@ -25,25 +36,10 @@ _SINGLE_LOAD_LIMIT = 1024
 _STREAMING_TOPK_LIMIT = 128
 
 
-def _block_m_heuristic(block_k: int) -> int:
-    """Choose BLOCK_M to keep BLOCK_M * BLOCK_K under register pressure limit."""
-    if block_k <= 4:
-        return 256
-    if block_k <= 8:
-        return 128
-    if block_k <= 16:
-        return 64
-    if block_k <= 32:
-        return 32
-    if block_k <= 64:
-        return 16
-    if block_k <= 128:
-        return 8
-    if block_k <= 256:
-        return 4
-    if block_k <= 512:
-        return 2
-    return 1
+def _block_m_heuristic(block_k: int, max_registers: int = 1024) -> int:
+    return int(
+        max(min(max_registers // 2 ** math.ceil(math.log2(block_k)), 256), 1)
+    )
 
 
 def _reduce_dim_strides(x: Tensor, dim: int):
@@ -80,8 +76,11 @@ def _reduce_dim_strides(x: Tensor, dim: int):
     if leading_contiguous:
         stride_row = x_perm.stride(len(out_shape) - 1)
         stride_col = x_perm.stride(-1)
-        x_flat = x_perm.as_strided((n_rows, n_cols), (stride_row, stride_col),
-                                    storage_offset=x_perm.storage_offset())
+        x_flat = x_perm.as_strided(
+            (n_rows, n_cols),
+            (stride_row, stride_col),
+            storage_offset=x_perm.storage_offset(),
+        )
     else:
         x_flat = x_perm.contiguous()
         stride_row = n_cols
@@ -92,6 +91,7 @@ def _reduce_dim_strides(x: Tensor, dim: int):
 
 # ── kth_largest ──────────────────────────────────────────────────────────
 
+
 @triton.jit
 def _kth_largest_kernel(
     x_ptr,
@@ -100,14 +100,15 @@ def _kth_largest_kernel(
     n_cols,
     stride_row,
     stride_col,
-    TOPK: tl.constexpr,
+    topk: tl.constexpr,
     kth: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_K: tl.constexpr,
+    block_m: tl.constexpr,
+    block_k: tl.constexpr,
 ):
-    block_idx = tl.program_id(0)
-    col_offsets = tl.arange(0, BLOCK_K)
-    row_indices = block_idx * BLOCK_M + tl.arange(0, BLOCK_M)
+    """Single-load topk kernel for k-th largest selection."""
+    group_idx = tl.program_id(0)
+    col_offsets = tl.arange(0, block_k)
+    row_indices = group_idx * block_m + tl.arange(0, block_m)
 
     ptrs = row_indices[:, None] * stride_row + col_offsets[None, :] * stride_col
     row_mask = row_indices < n_rows
@@ -115,16 +116,19 @@ def _kth_largest_kernel(
     mask = row_mask[:, None] & col_mask[None, :]
 
     data = tl.load(x_ptr + ptrs, mask=mask, other=float("-inf"))
-    topk_vals = tl.topk(data, TOPK)
+    topk_vals = tl.topk(data, topk)
 
-    select = tl.arange(0, TOPK)[None, :]
+    select = tl.arange(0, topk)[None, :]
     kth_val = tl.sum(tl.where(select == (kth - 1), topk_vals, 0.0), axis=1)
 
     tl.store(out_ptr + row_indices, kth_val, mask=row_mask)
 
 
 def kth_largest(
-    x: Tensor, k: int, dim: int = -1, chunk_k: int = 1024,
+    x: Tensor,
+    k: int,
+    dim: int = -1,
+    chunk_k: int = 1024,
 ) -> Tensor:
     """Return the k-th largest value along a dimension.
 
@@ -143,26 +147,29 @@ def kth_largest(
     ndim = x.ndim
     assert ndim >= 1, "Input must be at least 1-D"
     dim = dim % ndim
-    K = x.shape[dim]
-    assert 1 <= k <= K, f"k={k} out of range for dim size {K}"
+    num_cols = x.shape[dim]
+    assert 1 <= k <= num_cols, f"k={k} out of range for dim size {num_cols}"
 
-    BLOCK_K = triton.next_power_of_2(K)
-    TOPK = triton.next_power_of_2(k)
-    M = x.numel() // K
+    block_k = triton.next_power_of_2(num_cols)
+    topk = triton.next_power_of_2(k)
+    n_elems = x.numel() // num_cols
 
     # Dispatch
-    if M * K < _SMALL_TENSOR or (BLOCK_K > _SINGLE_LOAD_LIMIT and TOPK > _STREAMING_TOPK_LIMIT):
-        return torch.kthvalue(x, K - k + 1, dim=dim).values
-    if BLOCK_K > _SINGLE_LOAD_LIMIT:
+    if n_elems * num_cols < _SMALL_TENSOR or (
+        block_k > _SINGLE_LOAD_LIMIT and topk > _STREAMING_TOPK_LIMIT
+    ):
+        return torch.kthvalue(x, num_cols - k + 1, dim=dim).values
+    if block_k > _SINGLE_LOAD_LIMIT:
         return streaming_kth_largest(x, k, dim, chunk_k)
 
     # Single-load triton
-    x_flat, n_rows, n_cols, stride_row, stride_col, out_shape = \
+    x_flat, n_rows, n_cols, stride_row, stride_col, out_shape = (
         _reduce_dim_strides(x, dim)
+    )
 
-    BLOCK_M = _block_m_heuristic(BLOCK_K)
-    num_warps = max(1, min(16, BLOCK_M * BLOCK_K // 256))
-    num_blocks = triton.cdiv(n_rows, BLOCK_M)
+    block_m = _block_m_heuristic(block_k)
+    num_warps = max(1, min(16, block_m * block_k // 256))
+    num_blocks = triton.cdiv(n_rows, block_m)
 
     out = torch.empty(n_rows, device=x.device, dtype=x.dtype)
     _kth_largest_kernel[(num_blocks,)](
@@ -173,9 +180,9 @@ def kth_largest(
         stride_row=stride_row,
         stride_col=stride_col,
         kth=k,
-        TOPK=TOPK,
-        BLOCK_M=BLOCK_M,
-        BLOCK_K=BLOCK_K,
+        topk=topk,
+        block_m=block_m,
+        block_k=block_k,
         num_warps=num_warps,
     )
 
@@ -186,6 +193,7 @@ def kth_largest(
 
 # ── mid_kth_largest ──────────────────────────────────────────────────────
 
+
 @triton.jit
 def _mid_kth_largest_kernel(
     x_ptr,
@@ -194,15 +202,15 @@ def _mid_kth_largest_kernel(
     n_cols,
     stride_row,
     stride_col,
-    TOPK: tl.constexpr,
+    topk: tl.constexpr,
     k_val: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    BLOCK_K: tl.constexpr,
+    block_m: tl.constexpr,
+    block_k: tl.constexpr,
 ):
-    """topk(TOPK), then average positions k-1 and k (0-indexed)."""
-    block_idx = tl.program_id(0)
-    col_offsets = tl.arange(0, BLOCK_K)
-    row_indices = block_idx * BLOCK_M + tl.arange(0, BLOCK_M)
+    """topk(topk), then average positions k-1 and k (0-indexed)."""
+    group_idx = tl.program_id(0)
+    col_offsets = tl.arange(0, block_k)
+    row_indices = group_idx * block_m + tl.arange(0, block_m)
 
     ptrs = row_indices[:, None] * stride_row + col_offsets[None, :] * stride_col
     row_mask = row_indices < n_rows
@@ -210,9 +218,9 @@ def _mid_kth_largest_kernel(
     mask = row_mask[:, None] & col_mask[None, :]
 
     data = tl.load(x_ptr + ptrs, mask=mask, other=float("-inf"))
-    topk_vals = tl.topk(data, TOPK)
+    topk_vals = tl.topk(data, topk)
 
-    select = tl.arange(0, TOPK)[None, :]
+    select = tl.arange(0, topk)[None, :]
     val_k = tl.sum(tl.where(select == (k_val - 1), topk_vals, 0.0), axis=1)
     val_k1 = tl.sum(tl.where(select == k_val, topk_vals, 0.0), axis=1)
 
@@ -221,7 +229,10 @@ def _mid_kth_largest_kernel(
 
 
 def mid_kth_largest(
-    x: Tensor, k: int, dim: int = -1, chunk_k: int = 1024,
+    x: Tensor,
+    k: int,
+    dim: int = -1,
+    chunk_k: int = 1024,
 ) -> Tensor:
     """Midpoint of the k-th and (k+1)-th largest values along a dimension.
 
@@ -240,31 +251,34 @@ def mid_kth_largest(
     ndim = x.ndim
     assert ndim >= 1, "Input must be at least 1-D"
     dim = dim % ndim
-    K = x.shape[dim]
-    assert 1 <= k and k + 1 <= K, (
-        f"k={k} out of range: need k+1 <= dim size {K}"
-    )
+    num_cols = x.shape[dim]
+    assert (
+        1 <= k and k + 1 <= num_cols
+    ), f"k={k} out of range: need k+1 <= dim size {num_cols}"
 
     kp1 = k + 1
-    BLOCK_K = triton.next_power_of_2(K)
-    TOPK = triton.next_power_of_2(kp1)
-    M = x.numel() // K
+    block_k = triton.next_power_of_2(num_cols)
+    topk = triton.next_power_of_2(kp1)
+    n_elems = x.numel() // num_cols
 
     # Dispatch
-    if M * K < _SMALL_TENSOR or (BLOCK_K > _SINGLE_LOAD_LIMIT and TOPK > _STREAMING_TOPK_LIMIT):
-        v1 = torch.kthvalue(x, K - k + 1, dim=dim).values
-        v2 = torch.kthvalue(x, K - k, dim=dim).values
+    if n_elems * num_cols < _SMALL_TENSOR or (
+        block_k > _SINGLE_LOAD_LIMIT and topk > _STREAMING_TOPK_LIMIT
+    ):
+        v1 = torch.kthvalue(x, num_cols - k + 1, dim=dim).values
+        v2 = torch.kthvalue(x, num_cols - k, dim=dim).values
         return (v1 + v2) / 2.0
-    if BLOCK_K > _SINGLE_LOAD_LIMIT:
+    if block_k > _SINGLE_LOAD_LIMIT:
         return streaming_mid_kth_largest(x, k, dim, chunk_k)
 
     # Single-load triton
-    x_flat, n_rows, n_cols, stride_row, stride_col, out_shape = \
+    x_flat, n_rows, n_cols, stride_row, stride_col, out_shape = (
         _reduce_dim_strides(x, dim)
+    )
 
-    BLOCK_M = _block_m_heuristic(BLOCK_K)
-    num_warps = max(1, min(16, BLOCK_M * BLOCK_K // 256))
-    num_blocks = triton.cdiv(n_rows, BLOCK_M)
+    block_m = _block_m_heuristic(block_k)
+    num_warps = max(1, min(16, block_m * block_k // 256))
+    num_blocks = triton.cdiv(n_rows, block_m)
 
     out = torch.empty(n_rows, device=x.device, dtype=x.dtype)
     _mid_kth_largest_kernel[(num_blocks,)](
@@ -274,10 +288,10 @@ def mid_kth_largest(
         n_cols=n_cols,
         stride_row=stride_row,
         stride_col=stride_col,
-        TOPK=TOPK,
+        topk=topk,
         k_val=k,
-        BLOCK_M=BLOCK_M,
-        BLOCK_K=BLOCK_K,
+        block_m=block_m,
+        block_k=block_k,
         num_warps=num_warps,
     )
 
@@ -288,6 +302,7 @@ def mid_kth_largest(
 
 # ── streaming_kth_largest ────────────────────────────────────────────────
 
+
 @triton.jit
 def _streaming_kth_largest_kernel(
     x_ptr,
@@ -296,52 +311,58 @@ def _streaming_kth_largest_kernel(
     n_cols,
     stride_row,
     stride_col,
-    TOPK: tl.constexpr,
-    DOUBLE_TOPK: tl.constexpr,
+    topk: tl.constexpr,
+    double_topk: tl.constexpr,
     kth: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    CHUNK_K: tl.constexpr,
-    N_CHUNKS: tl.constexpr,
+    block_m: tl.constexpr,
+    chunk_k: tl.constexpr,
+    n_chunks: tl.constexpr,
 ):
-    """Streaming topk: load CHUNK_K cols at a time, merge with running buffer.
+    """Streaming topk: load chunk_k cols at a time, merge with running buffer.
 
     Each iteration:
-      1. Load CHUNK_K columns, topk -> local TOPK winners
-      2. join(buf, local) -> (BLOCK_M, TOPK, 2)
-      3. reshape -> (BLOCK_M, 2*TOPK)
-      4. topk -> new buf (BLOCK_M, TOPK)
+      1. Load chunk_k columns, topk -> local topk winners
+      2. join(buf, local) -> (block_m, topk, 2)
+      3. reshape -> (block_m, 2*topk)
+      4. topk -> new buf (block_m, topk)
     """
-    block_idx = tl.program_id(0)
-    row_indices = block_idx * BLOCK_M + tl.arange(0, BLOCK_M)
+    group_idx = tl.program_id(0)
+    row_indices = group_idx * block_m + tl.arange(0, block_m)
     row_mask = row_indices < n_rows
 
-    buf = tl.full([BLOCK_M, TOPK], float("-inf"), dtype=tl.float32)
+    buf = tl.full([block_m, topk], float("-inf"), dtype=tl.float32)
 
-    for c in range(N_CHUNKS):
-        col_start = c * CHUNK_K
-        col_offsets = col_start + tl.arange(0, CHUNK_K)
+    for c in range(n_chunks):
+        col_start = c * chunk_k
+        col_offsets = col_start + tl.arange(0, chunk_k)
         col_mask = col_offsets < n_cols
         mask = row_mask[:, None] & col_mask[None, :]
-        ptrs = row_indices[:, None] * stride_row + col_offsets[None, :] * stride_col
+        ptrs = (
+            row_indices[:, None] * stride_row
+            + col_offsets[None, :] * stride_col
+        )
         chunk = tl.load(x_ptr + ptrs, mask=mask, other=float("-inf"))
 
         # Local top-k from this chunk
-        local_topk = tl.topk(chunk, TOPK)
+        local_topk = tl.topk(chunk, topk)
 
         # Merge with running buffer: concat then topk
         joined = tl.join(buf, local_topk)
-        combined = tl.reshape(joined, [BLOCK_M, DOUBLE_TOPK])
-        buf = tl.topk(combined, TOPK)
+        combined = tl.reshape(joined, [block_m, double_topk])
+        buf = tl.topk(combined, topk)
 
     # Extract k-th largest
-    select = tl.arange(0, TOPK)[None, :]
+    select = tl.arange(0, topk)[None, :]
     kth_val = tl.sum(tl.where(select == (kth - 1), buf, 0.0), axis=1)
 
     tl.store(out_ptr + row_indices, kth_val, mask=row_mask)
 
 
 def streaming_kth_largest(
-    x: Tensor, k: int, dim: int = -1, chunk_k: int = 1024,
+    x: Tensor,
+    k: int,
+    dim: int = -1,
+    chunk_k: int = 1024,
 ) -> Tensor:
     """Streaming k-th largest for large K dimensions.
 
@@ -364,16 +385,17 @@ def streaming_kth_largest(
     n = x.shape[dim]
     assert 1 <= k <= n, f"k={k} out of range for dim size {n}"
 
-    x_flat, n_rows, n_cols, stride_row, stride_col, out_shape = \
+    x_flat, n_rows, n_cols, stride_row, stride_col, out_shape = (
         _reduce_dim_strides(x, dim)
+    )
 
-    TOPK = triton.next_power_of_2(k)
-    CHUNK_K = triton.next_power_of_2(max(chunk_k, TOPK))
-    DOUBLE_TOPK = 2 * TOPK
-    N_CHUNKS = triton.cdiv(n_cols, CHUNK_K)
-    BLOCK_M = _block_m_heuristic(CHUNK_K)
-    num_warps = max(1, min(16, BLOCK_M * CHUNK_K // 256))
-    num_blocks = triton.cdiv(n_rows, BLOCK_M)
+    topk = triton.next_power_of_2(k)
+    chunk_k = triton.next_power_of_2(max(chunk_k, topk))
+    double_topk = 2 * topk
+    n_chunks = triton.cdiv(n_cols, chunk_k)
+    block_m = _block_m_heuristic(chunk_k)
+    num_warps = max(1, min(16, block_m * chunk_k // 256))
+    num_blocks = triton.cdiv(n_rows, block_m)
 
     out = torch.empty(n_rows, device=x.device, dtype=x.dtype)
     _streaming_kth_largest_kernel[(num_blocks,)](
@@ -383,12 +405,12 @@ def streaming_kth_largest(
         n_cols=n_cols,
         stride_row=stride_row,
         stride_col=stride_col,
-        TOPK=TOPK,
-        DOUBLE_TOPK=DOUBLE_TOPK,
+        topk=topk,
+        double_topk=double_topk,
         kth=k,
-        BLOCK_M=BLOCK_M,
-        CHUNK_K=CHUNK_K,
-        N_CHUNKS=N_CHUNKS,
+        block_m=block_m,
+        chunk_k=chunk_k,
+        n_chunks=n_chunks,
         num_warps=num_warps,
     )
 
@@ -399,6 +421,7 @@ def streaming_kth_largest(
 
 # ── streaming_mid_kth_largest ──────────────────────────────────────────
 
+
 @triton.jit
 def _streaming_mid_kth_largest_kernel(
     x_ptr,
@@ -407,36 +430,39 @@ def _streaming_mid_kth_largest_kernel(
     n_cols,
     stride_row,
     stride_col,
-    TOPK: tl.constexpr,
-    DOUBLE_TOPK: tl.constexpr,
+    topk: tl.constexpr,
+    double_topk: tl.constexpr,
     k_val: tl.constexpr,
-    BLOCK_M: tl.constexpr,
-    CHUNK_K: tl.constexpr,
-    N_CHUNKS: tl.constexpr,
+    block_m: tl.constexpr,
+    chunk_k: tl.constexpr,
+    n_chunks: tl.constexpr,
 ):
-    """Streaming midpoint topk: same as streaming_kth but extracts mid(k, k+1)."""
-    block_idx = tl.program_id(0)
-    row_indices = block_idx * BLOCK_M + tl.arange(0, BLOCK_M)
+    """Streaming midpoint topk: extracts mid(k, k+1)."""
+    group_idx = tl.program_id(0)
+    row_indices = group_idx * block_m + tl.arange(0, block_m)
     row_mask = row_indices < n_rows
 
-    buf = tl.full([BLOCK_M, TOPK], float("-inf"), dtype=tl.float32)
+    buf = tl.full([block_m, topk], float("-inf"), dtype=tl.float32)
 
-    for c in range(N_CHUNKS):
-        col_start = c * CHUNK_K
-        col_offsets = col_start + tl.arange(0, CHUNK_K)
+    for c in range(n_chunks):
+        col_start = c * chunk_k
+        col_offsets = col_start + tl.arange(0, chunk_k)
         col_mask = col_offsets < n_cols
         mask = row_mask[:, None] & col_mask[None, :]
-        ptrs = row_indices[:, None] * stride_row + col_offsets[None, :] * stride_col
+        ptrs = (
+            row_indices[:, None] * stride_row
+            + col_offsets[None, :] * stride_col
+        )
         chunk = tl.load(x_ptr + ptrs, mask=mask, other=float("-inf"))
 
-        local_topk = tl.topk(chunk, TOPK)
+        local_topk = tl.topk(chunk, topk)
 
         joined = tl.join(buf, local_topk)
-        combined = tl.reshape(joined, [BLOCK_M, DOUBLE_TOPK])
-        buf = tl.topk(combined, TOPK)
+        combined = tl.reshape(joined, [block_m, double_topk])
+        buf = tl.topk(combined, topk)
 
     # Extract midpoint of k-th and (k+1)-th largest
-    select = tl.arange(0, TOPK)[None, :]
+    select = tl.arange(0, topk)[None, :]
     val_k = tl.sum(tl.where(select == (k_val - 1), buf, 0.0), axis=1)
     val_k1 = tl.sum(tl.where(select == k_val, buf, 0.0), axis=1)
 
@@ -445,7 +471,10 @@ def _streaming_mid_kth_largest_kernel(
 
 
 def streaming_mid_kth_largest(
-    x: Tensor, k: int, dim: int = -1, chunk_k: int = 1024,
+    x: Tensor,
+    k: int,
+    dim: int = -1,
+    chunk_k: int = 1024,
 ) -> Tensor:
     """Streaming midpoint of k-th and (k+1)-th largest for large K dimensions.
 
@@ -465,21 +494,22 @@ def streaming_mid_kth_largest(
     assert ndim >= 1, "Input must be at least 1-D"
     dim = dim % ndim
     n = x.shape[dim]
-    assert 1 <= k and k + 1 <= n, (
-        f"k={k} out of range: need k+1 <= dim size {n}"
+    assert (
+        1 <= k and k + 1 <= n
+    ), f"k={k} out of range: need k+1 <= dim size {n}"
+
+    x_flat, n_rows, n_cols, stride_row, stride_col, out_shape = (
+        _reduce_dim_strides(x, dim)
     )
 
-    x_flat, n_rows, n_cols, stride_row, stride_col, out_shape = \
-        _reduce_dim_strides(x, dim)
-
     kp1 = k + 1
-    TOPK = triton.next_power_of_2(kp1)
-    CHUNK_K = triton.next_power_of_2(max(chunk_k, TOPK))
-    DOUBLE_TOPK = 2 * TOPK
-    N_CHUNKS = triton.cdiv(n_cols, CHUNK_K)
-    BLOCK_M = _block_m_heuristic(CHUNK_K)
-    num_warps = max(1, min(16, BLOCK_M * CHUNK_K // 256))
-    num_blocks = triton.cdiv(n_rows, BLOCK_M)
+    topk = triton.next_power_of_2(kp1)
+    chunk_k = triton.next_power_of_2(max(chunk_k, topk))
+    double_topk = 2 * topk
+    n_chunks = triton.cdiv(n_cols, chunk_k)
+    block_m = _block_m_heuristic(chunk_k)
+    num_warps = max(1, min(16, block_m * chunk_k // 256))
+    num_blocks = triton.cdiv(n_rows, block_m)
 
     out = torch.empty(n_rows, device=x.device, dtype=x.dtype)
     _streaming_mid_kth_largest_kernel[(num_blocks,)](
@@ -489,12 +519,12 @@ def streaming_mid_kth_largest(
         n_cols=n_cols,
         stride_row=stride_row,
         stride_col=stride_col,
-        TOPK=TOPK,
-        DOUBLE_TOPK=DOUBLE_TOPK,
+        topk=topk,
+        double_topk=double_topk,
         k_val=k,
-        BLOCK_M=BLOCK_M,
-        CHUNK_K=CHUNK_K,
-        N_CHUNKS=N_CHUNKS,
+        block_m=block_m,
+        chunk_k=chunk_k,
+        n_chunks=n_chunks,
         num_warps=num_warps,
     )
 
@@ -505,10 +535,13 @@ def streaming_mid_kth_largest(
 
 # ── radix-key helpers ──────────────────────────────────────────────────
 
+
 @triton.jit
 def _get_topmask_and_fullmask(x):
     """Masks for IEEE-754 sign-magnitude → sortable-uint mapping."""
-    tl.static_assert(x.dtype.is_int_unsigned(), "must be passed as unsigned bits")
+    tl.static_assert(
+        x.dtype.is_int_unsigned(), "must be passed as unsigned bits"
+    )
     tm: tl.constexpr = 1 << (-1 + x.dtype.primitive_bitwidth)
     fm: tl.constexpr = (1 << x.dtype.primitive_bitwidth) - 1
     tm_arr = tl.full(x.shape, tm, dtype=x.dtype)
@@ -532,6 +565,7 @@ def _key_to_fpval(x):
 
 # ── radix_kth_largest ──────────────────────────────────────────────────
 
+
 @triton.jit
 def _radix_kth_largest_kernel(
     x_ptr,
@@ -540,11 +574,11 @@ def _radix_kth_largest_kernel(
     n_cols,
     stride_row,
     stride_col,
-    N_PAD: tl.constexpr,
-    N_ACT: tl.constexpr,
+    n_pad: tl.constexpr,
+    n_act: tl.constexpr,
     kth: tl.constexpr,
-    BLOCK_N: tl.constexpr,
-    BLOCK_M: tl.constexpr,
+    block_n: tl.constexpr,
+    block_m: tl.constexpr,
 ):
     """Radix-key streaming k-th largest.
 
@@ -563,44 +597,49 @@ def _radix_kth_largest_kernel(
     x_dtype: tl.constexpr = x_ptr.dtype.element_ty
 
     pid = tl.program_id(0)
-    offs_m = pid * BLOCK_M + tl.arange(0, BLOCK_M)
+    offs_m = pid * block_m + tl.arange(0, block_m)
     mask_m = offs_m[:, None] < n_rows
 
     # Peel first (masked) iteration from the end
-    loop_iterations: tl.constexpr = N_PAD // BLOCK_N - 1
-    offs_n = loop_iterations * BLOCK_N + tl.arange(0, BLOCK_N)
+    loop_iterations: tl.constexpr = n_pad // block_n - 1
+    offs_n = loop_iterations * block_n + tl.arange(0, block_n)
     mask_n = offs_n[None, :] < n_cols
 
     x_ptrs = x_ptr + offs_m[:, None] * stride_row + offs_n[None, :] * stride_col
     x = tl.load(x_ptrs, mask=(mask_m & mask_n), other=float("-inf"))
     x = _fpval_to_key(x.to(x_utype, bitcast=True))
-    x = (x.to(x_ultype) << 16) | (N_PAD - offs_n)[None, :]
-    acc = tl.topk(x, N_ACT, dim=1)
+    x = (x.to(x_ultype) << 16) | (n_pad - offs_n)[None, :]
+    acc = tl.topk(x, n_act, dim=1)
 
     # Stream remaining chunks right-to-left
-    for _i in (tl.static_range if loop_iterations <= 4 else range)(loop_iterations):
+    for _ in (tl.static_range if loop_iterations <= 4 else range)(
+        loop_iterations
+    ):
         acc = tl.bitonic_merge(acc)
-        x_ptrs -= BLOCK_N * stride_col
-        offs_n -= BLOCK_N
+        x_ptrs -= block_n * stride_col
+        offs_n -= block_n
         x = tl.load(x_ptrs, mask=mask_m, other=float("-inf"))
         x = _fpval_to_key(x.to(x_utype, bitcast=True))
-        x = (x.to(x_ultype) << 16) | (N_PAD - offs_n)[None, :]
-        acc = tl.maximum(acc, tl.topk(x, N_ACT, dim=1))
+        x = (x.to(x_ultype) << 16) | (n_pad - offs_n)[None, :]
+        acc = tl.maximum(acc, tl.topk(x, n_act, dim=1))
 
     # Final sort descending, unpack values
     acc = tl.sort(acc, dim=1, descending=True)
     y_values_raw = (acc >> 16).to(x_utype)
     y_values = _key_to_fpval(y_values_raw).to(x_dtype, bitcast=True)
 
-    # k-th largest (0-indexed position kth-1 in descending-sorted top-N_ACT)
-    select = tl.arange(0, N_ACT)[None, :]
+    # k-th largest (0-indexed position kth-1 in descending-sorted top-n_act)
+    select = tl.arange(0, n_act)[None, :]
     kth_val = tl.sum(tl.where(select == (kth - 1), y_values, 0.0), axis=1)
 
     tl.store(out_ptr + offs_m, kth_val, mask=offs_m < n_rows)
 
 
 def radix_kth_largest(
-    x: Tensor, k: int, dim: int = -1, block_n: int = 1024,
+    x: Tensor,
+    k: int,
+    dim: int = -1,
+    block_n: int = 1024,
 ) -> Tensor:
     """Radix-key streaming k-th largest for large K dimensions.
 
@@ -623,15 +662,16 @@ def radix_kth_largest(
     n = x.shape[dim]
     assert 1 <= k <= n, f"k={k} out of range for dim size {n}"
 
-    x_flat, n_rows, n_cols, stride_row, stride_col, out_shape = \
+    x_flat, n_rows, n_cols, stride_row, stride_col, out_shape = (
         _reduce_dim_strides(x, dim)
+    )
 
-    N_ACT = triton.next_power_of_2(k)
-    BLOCK_N = triton.next_power_of_2(max(block_n, N_ACT))
-    N_PAD = triton.cdiv(n_cols, BLOCK_N) * BLOCK_N
-    BLOCK_M = _block_m_heuristic(BLOCK_N)
-    num_warps = max(1, min(16, BLOCK_M * BLOCK_N // 256))
-    num_blocks = triton.cdiv(n_rows, BLOCK_M)
+    n_act = triton.next_power_of_2(k)
+    block_n = triton.next_power_of_2(max(block_n, n_act))
+    n_pad = triton.cdiv(n_cols, block_n) * block_n
+    block_m = _block_m_heuristic(block_n)
+    num_warps = max(1, min(16, block_m * block_n // 256))
+    num_blocks = triton.cdiv(n_rows, block_m)
 
     out = torch.empty(n_rows, device=x.device, dtype=x.dtype)
     _radix_kth_largest_kernel[(num_blocks,)](
@@ -641,11 +681,11 @@ def radix_kth_largest(
         n_cols=n_cols,
         stride_row=stride_row,
         stride_col=stride_col,
-        N_PAD=N_PAD,
-        N_ACT=N_ACT,
+        n_pad=n_pad,
+        n_act=n_act,
         kth=k,
-        BLOCK_N=BLOCK_N,
-        BLOCK_M=BLOCK_M,
+        block_n=block_n,
+        block_m=block_m,
         num_warps=num_warps,
     )
 

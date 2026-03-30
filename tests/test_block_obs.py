@@ -4,105 +4,105 @@ from dataclasses import dataclass
 
 
 @dataclass
-class BlockConfig:
-    """Configuration for block structure."""
+class GroupConfig:
+    """Configuration for group structure."""
     n: int = 256          # Output dim
     k: int = 128          # Input dim
-    block_row: int = 4   # Block size along output dim
-    block_col: int = 4   # Block size along input dim
-    group_row: int = 1    # Group size along output dim (in blocks)
-    group_col: int = 4    # Group size along input dim (in blocks)
-    blocks_to_prune: int = 2  # Blocks to prune per group
+    group_row: int = 4   # Group size along output dim
+    group_col: int = 4   # Group size along input dim
+    block_row: int = 1    # Block size along output dim (in groups)
+    block_col: int = 4    # Block size along input dim (in groups)
+    groups_to_prune: int = 2  # Groups to prune per block
     
     @property
     def num_blocks_row(self) -> int:
-        return self.n // self.block_row  # 16
+        return self.n // self.group_row  # 16
     
     @property
     def num_blocks_col(self) -> int:
-        return self.k // self.block_col  # 8
+        return self.k // self.group_col  # 8
     
     @property
-    def num_groups_row(self) -> int:
-        return self.num_blocks_row // self.group_row  # 16
+    def num_scopes_row(self) -> int:
+        return self.num_blocks_row // self.block_row  # 16
     
     @property
-    def num_groups_col(self) -> int:
-        return self.num_blocks_col // self.group_col  # 2
+    def num_scopes_col(self) -> int:
+        return self.num_blocks_col // self.block_col  # 2
     
     @property
-    def blocks_per_group(self) -> int:
-        return self.group_row * self.group_col  # 4
+    def blocks_per_scope(self) -> int:
+        return self.block_row * self.block_col  # 4
 
 
-class BlockedWeightView:
-    """Handles blocked view B with shape (num_blocks_row, num_blocks_col, block_row, block_col)."""
+class GroupedWeightView:
+    """Handles blocked view B with shape (num_blocks_row, num_blocks_col, group_row, group_col)."""
     
-    def __init__(self, weight: torch.Tensor, config: BlockConfig):
+    def __init__(self, weight: torch.Tensor, config: GroupConfig):
         self.config = config
         self.n, self.k = weight.shape
         assert self.n == config.n and self.k == config.k
         
         # Reshape to blocked view: (16, 8, 16, 16)
         self.B = weight.view(
-            config.num_blocks_row, config.block_row,
-            config.num_blocks_col, config.block_col
-        ).permute(0, 2, 1, 3).contiguous()  # (n_blocks_r, n_blocks_c, blk_r, blk_c)
+            config.num_blocks_row, config.group_row,
+            config.num_blocks_col, config.group_col
+        ).permute(0, 2, 1, 3).contiguous()  # (n_groups_r, n_groups_c, blk_r, blk_c)
         
-    def to_grouped(self) -> 'GroupedWeightView':
+    def to_grouped(self) -> 'BlockedWeightView':
         """Convert to grouped view G with shape (16, 2, 4, 16, 16)."""
         cfg = self.config
-        # Reshape blocks into groups: (16, 2, 4, 16, 16)
-        # group_row=1, group_col=4 means we group 1x4 blocks together
+        # Reshape groups into blocks: (16, 2, 4, 16, 16)
+        # block_row=1, block_col=4 means we block 1x4 groups together
         G = self.B.view(
-            cfg.num_groups_row, cfg.group_row,  # 16, 1
-            cfg.num_groups_col, cfg.group_col,  # 2, 4
-            cfg.block_row, cfg.block_col        # 16, 16
+            cfg.num_scopes_row, cfg.block_row,  # 16, 1
+            cfg.num_scopes_col, cfg.block_col,  # 2, 4
+            cfg.group_row, cfg.group_col        # 16, 16
         ).permute(0, 2, 1, 3, 4, 5).contiguous()  # (n_grp_r, n_grp_c, grp_r, grp_c, blk_r, blk_c)
         
-        # Flatten group dimensions: (16, 2, 4, 16, 16)
+        # Flatten block dimensions: (16, 2, 4, 16, 16)
         G = G.view(
-            cfg.num_groups_row, cfg.num_groups_col,
-            cfg.blocks_per_group,
-            cfg.block_row, cfg.block_col
+            cfg.num_scopes_row, cfg.num_scopes_col,
+            cfg.blocks_per_scope,
+            cfg.group_row, cfg.group_col
         )
-        return GroupedWeightView(G, self.config)
+        return BlockedWeightView(G, self.config)
     
-    def from_grouped(self, G_view: 'GroupedWeightView') -> torch.Tensor:
+    def from_grouped(self, G_view: 'BlockedWeightView') -> torch.Tensor:
         """Convert grouped view back to blocked view."""
         cfg = self.config
         G = G_view.G  # (16, 2, 4, 16, 16)
         
-        # Reshape to separate group dimensions: (16, 2, 1, 4, 16, 16)
+        # Reshape to separate block dimensions: (16, 2, 1, 4, 16, 16)
         G = G.view(
-            cfg.num_groups_row, cfg.num_groups_col,
-            cfg.group_row, cfg.group_col,
-            cfg.block_row, cfg.block_col
+            cfg.num_scopes_row, cfg.num_scopes_col,
+            cfg.block_row, cfg.block_col,
+            cfg.group_row, cfg.group_col
         )
         
         # Permute back to blocked structure: (16, 8, 16, 16)
         B = G.permute(0, 2, 1, 3, 4, 5).contiguous()
         B = B.view(
             cfg.num_blocks_row, cfg.num_blocks_col,
-            cfg.block_row, cfg.block_col
+            cfg.group_row, cfg.group_col
         )
         return B
 
 
-class GroupedWeightView:
-    """Handles grouped view G with shape (n_grp_r, n_grp_c, blocks_per_group, blk_r, blk_c)."""
+class BlockedWeightView:
+    """Handles grouped view G with shape (n_grp_r, n_grp_c, blocks_per_scope, blk_r, blk_c)."""
     
-    def __init__(self, G: torch.Tensor, config: BlockConfig):
+    def __init__(self, G: torch.Tensor, config: GroupConfig):
         self.G = G  # (16, 2, 4, 16, 16)
         self.config = config
         
-    def flatten_blocks(self) -> torch.Tensor:
-        """Flatten each block to a vector: (16, 2, 4, 256)."""
+    def flatten_groups(self) -> torch.Tensor:
+        """Flatten each group to a vector: (16, 2, 4, 256)."""
         cfg = self.config
         return self.G.view(
-            cfg.num_groups_row, cfg.num_groups_col,
-            cfg.blocks_per_group,
-            cfg.block_row * cfg.block_col
+            cfg.num_scopes_row, cfg.num_scopes_col,
+            cfg.blocks_per_scope,
+            cfg.group_row * cfg.group_col
         )
 
 
@@ -110,75 +110,75 @@ class StructuredOBSSolver:
     """
     Vectorized Structured OBS implementation.
     
-    For each group row (16 groups), we maintain one H = X^T X and C = H^{-1}.
-    Since blocks within a group share the same input features (columns of X),
+    For each block row (16 blocks), we maintain one H = X^T X and C = H^{-1}.
+    Since groups within a block share the same input features (columns of X),
     they share the same Hessian structure.
     """
     
-    def __init__(self, X: torch.Tensor, config: BlockConfig, device: str = 'cuda'):
+    def __init__(self, X: torch.Tensor, config: GroupConfig, device: str = 'cuda'):
         """
         Args:
             X: Input matrix of shape (m, k) = (batch, 128)
-            config: Block configuration
+            config: Group configuration
             device: Device to run on
         """
         self.config = config
         self.device = device
         self.X = X.to(device)  # (m, 128)
         
-        # Compute H = X^T X for each group column
-        # Since groups in the same column share the same input features,
-        # we need H for each block column position
+        # Compute H = X^T X for each block column
+        # Since blocks in the same column share the same input features,
+        # we need H for each group column position
         self._compute_hessians()
         
-        # Track pruned blocks: (n_grp_r, n_grp_c, blocks_per_group)
+        # Track pruned groups: (n_grp_r, n_grp_c, blocks_per_scope)
         self.pruned_mask = torch.zeros(
-            config.num_groups_row, config.num_groups_col,
-            config.blocks_per_group,
+            config.num_scopes_row, config.num_scopes_col,
+            config.blocks_per_scope,
             dtype=torch.bool, device=device
         )
         
-        # Track remaining blocks to prune per group
+        # Track remaining groups to prune per block
         self.remaining_to_prune = torch.full(
-            (config.num_groups_row, config.num_groups_col),
-            config.blocks_to_prune,
+            (config.num_scopes_row, config.num_scopes_col),
+            config.groups_to_prune,
             dtype=torch.int32, device=device
         )
         
     def _compute_hessians(self):
-        """Compute block-diagonal Hessian and its inverse for each group."""
+        """Compute group-diagonal Hessian and its inverse for each block."""
         cfg = self.config
         
         # H = X^T X has shape (k, k) = (128, 128)
-        # For block structure, we consider the block-diagonal approximation
+        # For group structure, we consider the group-diagonal approximation
         H_full = self.X.T @ self.X  # (128, 128)
         
-        # For each block column position, extract the corresponding H block
-        # Block size along input dim is cfg.block_col = 16
-        # We have cfg.num_blocks_col = 8 block columns
+        # For each group column position, extract the corresponding H group
+        # Group size along input dim is cfg.group_col = 16
+        # We have cfg.num_blocks_col = 8 group columns
         
-        # Reshape H to block view: (8, 16, 8, 16)
-        H_blocks = H_full.view(
-            cfg.num_blocks_col, cfg.block_col,
-            cfg.num_blocks_col, cfg.block_col
+        # Reshape H to group view: (8, 16, 8, 16)
+        H_scopes = H_full.view(
+            cfg.num_blocks_col, cfg.group_col,
+            cfg.num_blocks_col, cfg.group_col
         ).permute(0, 2, 1, 3)  # (n_blk_c, n_blk_c, blk_c, blk_c)
         
-        # For structured OBS, we use block-diagonal approximation
-        # H_b = H_blocks[i, i] for block column i
+        # For structured OBS, we use group-diagonal approximation
+        # H_b = H_scopes[i, i] for group column i
         
-        # For grouped view, each group spans cfg.group_col block columns
-        # So H for a group is the submatrix covering those columns
+        # For grouped view, each block spans cfg.block_col group columns
+        # So H for a block is the submatrix covering those columns
         
-        # Precompute C = H^{-1} for each possible group of block columns
-        # Group spans columns [j*group_col*block_col : (j+1)*group_col*block_col]
+        # Precompute C = H^{-1} for each possible block of group columns
+        # Block spans columns [j*block_col*group_col : (j+1)*block_col*group_col]
         
-        self.H_inv_list = []  # List of C for each group column index
+        self.H_inv_list = []  # List of C for each block column index
         
-        for grp_c in range(cfg.num_groups_col):
-            start_col = grp_c * cfg.group_col * cfg.block_col
-            end_col = (grp_c + 1) * cfg.group_col * cfg.block_col
+        for grp_c in range(cfg.num_scopes_col):
+            start_col = grp_c * cfg.block_col * cfg.group_col
+            end_col = (grp_c + 1) * cfg.block_col * cfg.group_col
             
-            # Extract H for this group column
+            # Extract H for this block column
             H_grp = H_full[start_col:end_col, start_col:end_col]  # (64, 64)
             
             # Add regularization for numerical stability
@@ -191,16 +191,16 @@ class StructuredOBSSolver:
         # Store C in blocked form for easier indexing: (2, 4, 16, 4, 16)
         # C_grp_col[b1, :, b2, :] gives C_{b1, b2}
         self.C_blocked = torch.stack([
-            C.view(cfg.group_col, cfg.block_col, cfg.group_col, cfg.block_col)
+            C.view(cfg.block_col, cfg.group_col, cfg.block_col, cfg.group_col)
             .permute(0, 2, 1, 3)  # (grp_c, grp_c, blk_c, blk_c)
             for C in self.H_inv_list
         ])  # (n_grp_c, grp_c, grp_c, blk_c, blk_c)
         
-    def compute_pruning_scores(self, G_view: GroupedWeightView) -> torch.Tensor:
+    def compute_pruning_scores(self, G_view: BlockedWeightView) -> torch.Tensor:
         """
-        Compute OBS pruning scores for all blocks.
+        Compute OBS pruning scores for all groups.
         
-        Score for block b: Tr[b @ (C_{b,b})^{-1} @ b^T]
+        Score for group b: Tr[b @ (C_{b,b})^{-1} @ b^T]
         
         Args:
             G_view: Grouped weight view with shape (16, 2, 4, 16, 16)
@@ -211,48 +211,48 @@ class StructuredOBSSolver:
         cfg = self.config
         G = G_view.G  # (n_grp_r, n_grp_c, blk_per_grp, blk_r, blk_c)
         
-        # Flatten spatial dims of each block: (16, 2, 4, 256)
-        G_flat = G_view.flatten_blocks()
+        # Flatten spatial dims of each group: (16, 2, 4, 256)
+        G_flat = G_view.flatten_groups()
         
         scores = torch.zeros(
-            cfg.num_groups_row, cfg.num_groups_col, cfg.blocks_per_group,
+            cfg.num_scopes_row, cfg.num_scopes_col, cfg.blocks_per_scope,
             device=self.device
         )
         
-        # For each group column, compute scores using corresponding C
-        for grp_c in range(cfg.num_groups_col):
+        # For each block column, compute scores using corresponding C
+        for grp_c in range(cfg.num_scopes_col):
             C = self.H_inv_list[grp_c]  # (64, 64)
             
-            # Extract C_{b,b} blocks for each block position
-            # C is (64, 64), each block is (16, 16)
-            # C_{b,b} for block b is the diagonal block
+            # Extract C_{b,b} groups for each group position
+            # C is (64, 64), each group is (16, 16)
+            # C_{b,b} for group b is the diagonal group
             
-            # Reshape C to block view: (4, 16, 4, 16)
-            C_blocks = C.view(
-                cfg.blocks_per_group, cfg.block_col,
-                cfg.blocks_per_group, cfg.block_col
+            # Reshape C to group view: (4, 16, 4, 16)
+            C_scopes = C.view(
+                cfg.blocks_per_scope, cfg.group_col,
+                cfg.blocks_per_scope, cfg.group_col
             ).permute(0, 2, 1, 3)  # (4, 4, 16, 16)
             
-            # Diagonal blocks C_{b,b}: (4, 16, 16)
-            C_diag = torch.diagonal(C_blocks, dim1=0, dim2=1).permute(2, 0, 1)  # (16, 4, 16)
+            # Diagonal groups C_{b,b}: (4, 16, 16)
+            C_diag = torch.diagonal(C_scopes, dim1=0, dim2=1).permute(2, 0, 1)  # (16, 4, 16)
             # Actually, let's do it properly:
-            C_diag = torch.stack([C_blocks[b, b] for b in range(cfg.blocks_per_group)])  # (4, 16, 16)
+            C_diag = torch.stack([C_scopes[b, b] for b in range(cfg.blocks_per_scope)])  # (4, 16, 16)
             
             # Compute (C_{b,b})^{-1} for each b
-            C_bb_inv = torch.linalg.inv(C_diag + 1e-6 * torch.eye(cfg.block_col, device=self.device))  # (4, 16, 16)
+            C_bb_inv = torch.linalg.inv(C_diag + 1e-6 * torch.eye(cfg.group_col, device=self.device))  # (4, 16, 16)
             
-            # For each group row and each block in the group
-            for grp_r in range(cfg.num_groups_row):
-                for b in range(cfg.blocks_per_group):
+            # For each block row and each group in the block
+            for grp_r in range(cfg.num_scopes_row):
+                for b in range(cfg.blocks_per_scope):
                     if self.pruned_mask[grp_r, grp_c, b]:
                         scores[grp_r, grp_c, b] = float('inf')
                         continue
                     
-                    # Get block weights: (16, 16) -> flatten to (256,)
+                    # Get group weights: (16, 16) -> flatten to (256,)
                     b_vec = G_flat[grp_r, grp_c, b]  # (256,)
                     
                     # Reshape to (blk_r, blk_c) = (16, 16)
-                    b_mat = b_vec.view(cfg.block_row, cfg.block_col)  # (16, 16)
+                    b_mat = b_vec.view(cfg.group_row, cfg.group_col)  # (16, 16)
                     
                     # Compute Tr[b @ (C_{b,b})^{-1} @ b^T]
                     # = sum_{i,j} b_{i,j} * (C_{b,b}^{-1} @ b^T)_{j,i}
@@ -266,7 +266,7 @@ class StructuredOBSSolver:
         
         return scores
     
-    def compute_pruning_scores_vectorized(self, G_view: GroupedWeightView) -> torch.Tensor:
+    def compute_pruning_scores_vectorized(self, G_view: BlockedWeightView) -> torch.Tensor:
         """
         Fully vectorized version of pruning scores.
         """
@@ -275,27 +275,27 @@ class StructuredOBSSolver:
         
         # Reshape to (n_grp_r, n_grp_c, blk_per_grp, blk_r, blk_c)
         scores = torch.zeros(
-            cfg.num_groups_row, cfg.num_groups_col, cfg.blocks_per_group,
+            cfg.num_scopes_row, cfg.num_scopes_col, cfg.blocks_per_scope,
             device=self.device
         )
         
-        for grp_c in range(cfg.num_groups_col):
+        for grp_c in range(cfg.num_scopes_col):
             C = self.H_inv_list[grp_c]  # (64, 64)
             
-            # Get all C_{b,b} blocks: (4, 16, 16)
-            C_blocks = C.view(cfg.blocks_per_group, cfg.block_col, cfg.blocks_per_group, cfg.block_col)
-            C_blocks = C_blocks.permute(0, 2, 1, 3)  # (4, 4, 16, 16)
-            C_diag = torch.stack([C_blocks[b, b] for b in range(cfg.blocks_per_group)])  # (4, 16, 16)
-            C_bb_inv = torch.linalg.inv(C_diag + 1e-6 * torch.eye(cfg.block_col, device=self.device))
+            # Get all C_{b,b} groups: (4, 16, 16)
+            C_scopes = C.view(cfg.blocks_per_scope, cfg.group_col, cfg.blocks_per_scope, cfg.group_col)
+            C_scopes = C_scopes.permute(0, 2, 1, 3)  # (4, 4, 16, 16)
+            C_diag = torch.stack([C_scopes[b, b] for b in range(cfg.blocks_per_scope)])  # (4, 16, 16)
+            C_bb_inv = torch.linalg.inv(C_diag + 1e-6 * torch.eye(cfg.group_col, device=self.device))
             
             # G[:, grp_c] has shape (16, 4, 16, 16)
             G_grp = G[:, grp_c]  # (16, 4, 16, 16)
             
-            # For each block position b
-            for b in range(cfg.blocks_per_group):
+            # For each group position b
+            for b in range(cfg.blocks_per_scope):
                 b_weights = G_grp[:, b]  # (16, 16, 16)
                 
-                # Compute score for all group rows at once
+                # Compute score for all block rows at once
                 # b_weights: (16, 16, 16), C_bb_inv[b]: (16, 16)
                 # We want: Tr[b @ C_bb_inv @ b^T] for each of 16 matrices
                 
@@ -311,42 +311,42 @@ class StructuredOBSSolver:
                 
                 scores[:, grp_c, b] = score
         
-        # Mask pruned blocks
+        # Mask pruned groups
         scores = torch.where(self.pruned_mask, torch.tensor(float('inf'), device=self.device), scores)
         
         return scores
     
-    def update_weights(self, G_view: GroupedWeightView, grp_r: int, grp_c: int, b: int):
+    def update_weights(self, G_view: BlockedWeightView, grp_r: int, grp_c: int, b: int):
         """
-        Apply OBS update after pruning block b from group (grp_r, grp_c).
+        Apply OBS update after pruning group b from block (grp_r, grp_c).
         
         Update rule:
         G_{i,:}^{unpruned} <- G_{i,:}^{unpruned} - C_{:,b} @ (C_{b,b})^{-1} @ G_{i,b}
         
         Args:
             G_view: Grouped weight view to update in-place
-            grp_r: Group row index
-            grp_c: Group column index
-            b: Block index within group to prune
+            grp_r: Block row index
+            grp_c: Block column index
+            b: Group index within block to prune
         """
         cfg = self.config
         G = G_view.G  # (16, 2, 4, 16, 16)
         
-        # Get C for this group column
+        # Get C for this block column
         C = self.H_inv_list[grp_c]  # (64, 64)
         
         # Extract C_{:,b} and C_{b,b}
-        # C is (64, 64), block size is 16
-        # Block b corresponds to rows/cols [b*16 : (b+1)*16]
+        # C is (64, 64), group size is 16
+        # Group b corresponds to rows/cols [b*16 : (b+1)*16]
         
-        start_idx = b * cfg.block_col
-        end_idx = (b + 1) * cfg.block_col
+        start_idx = b * cfg.group_col
+        end_idx = (b + 1) * cfg.group_col
         
-        C_col_b = C[:, start_idx:end_idx]  # (64, 16) - all columns for block b rows
+        C_col_b = C[:, start_idx:end_idx]  # (64, 16) - all columns for group b rows
         C_bb = C[start_idx:end_idx, start_idx:end_idx]  # (16, 16)
-        C_bb_inv = torch.linalg.inv(C_bb + 1e-6 * torch.eye(cfg.block_col, device=self.device))
+        C_bb_inv = torch.linalg.inv(C_bb + 1e-6 * torch.eye(cfg.group_col, device=self.device))
         
-        # Get the weight block to prune
+        # Get the weight group to prune
         G_ib = G[grp_r, grp_c, b]  # (16, 16)
         
         # Compute update factor: C_{:,b} @ (C_{b,b})^{-1} @ G_{i,b}
@@ -359,26 +359,26 @@ class StructuredOBSSolver:
         # Let's flatten everything properly
         
         # G[grp_r, grp_c] has shape (4, 16, 16) -> flatten to (4, 256)
-        G_grp = G[grp_r, grp_c].view(cfg.blocks_per_group, -1)  # (4, 256)
+        G_grp = G[grp_r, grp_c].view(cfg.blocks_per_scope, -1)  # (4, 256)
         
         # C is (64, 64), reshape to (4, 16, 4, 16) -> (4, 4, 16, 16)
-        C_blocks = C.view(cfg.blocks_per_group, cfg.block_col, cfg.blocks_per_group, cfg.block_col)
-        C_blocks = C_blocks.permute(0, 2, 1, 3)  # (4, 4, 16, 16)
+        C_scopes = C.view(cfg.blocks_per_scope, cfg.group_col, cfg.blocks_per_scope, cfg.group_col)
+        C_scopes = C_scopes.permute(0, 2, 1, 3)  # (4, 4, 16, 16)
         
-        # C_{:,b} means all block rows, block column b
-        # Shape: (4, 16, 16) for each source block, stacked: (4, 4, 16, 16) where last dim is b
-        C_col_b_blocks = C_blocks[:, b, :, :]  # (4, 16, 16)
+        # C_{:,b} means all group rows, group column b
+        # Shape: (4, 16, 16) for each source group, stacked: (4, 4, 16, 16) where last dim is b
+        C_col_b_scopes = C_scopes[:, b, :, :]  # (4, 16, 16)
         
         # C_{b,b}
-        C_bb_block = C_blocks[b, b]  # (16, 16)
-        C_bb_inv_block = torch.linalg.inv(C_bb_block + 1e-6 * torch.eye(cfg.block_col, device=self.device))
+        C_bb_block = C_scopes[b, b]  # (16, 16)
+        C_bb_inv_block = torch.linalg.inv(C_bb_block + 1e-6 * torch.eye(cfg.group_col, device=self.device))
         
         # G_{i,b}
         G_ib_vec = G_grp[b]  # (256,)
         
-        # Compute (C_{b,b})^{-1} @ G_{i,b} (in block form)
+        # Compute (C_{b,b})^{-1} @ G_{i,b} (in group form)
         # G_ib_vec: (256,) = (16, 16) flattened
-        G_ib_mat = G_ib_vec.view(cfg.block_row, cfg.block_col)  # (16, 16)
+        G_ib_mat = G_ib_vec.view(cfg.group_row, cfg.group_col)  # (16, 16)
         
         # C_bb_inv_block: (16, 16), G_ib_mat: (16, 16)
         temp = C_bb_inv_block @ G_ib_mat.T  # (16, 16) - wait, dimensions don't match
@@ -390,7 +390,7 @@ class StructuredOBSSolver:
         # Let's think: C is (k_per_group, k_per_group) = (64, 64)
         # G_{i,b} is (out_block, in_block) = (16, 16)
         
-        # The formula G_{i,:}^{unpruned} suggests we're updating all input blocks
+        # The formula G_{i,:}^{unpruned} suggests we're updating all input groups
         # So we flatten input dim: G_{i,:} has shape (4*16,) = (64,)
         
         G_i_flat = G_grp.view(-1)  # (1024,) = (4*256)
@@ -400,27 +400,27 @@ class StructuredOBSSolver:
         # Actually, for OBS, if W is (n, k), and we prune based on input features (columns),
         # then the update is for each output row independently.
         
-        # G[grp_r, grp_c, :, :, :] is (4, 16, 16) = (blocks, out_dim, in_dim_per_block)
+        # G[grp_r, grp_c, :, :, :] is (4, 16, 16) = (groups, out_dim, in_dim_per_block)
         # For each output position j in [0, 15], we have a vector of 64 input weights
         
-        # Reshape: (4, 16, 16) -> (16, 4, 16) = (out_pos, blocks, in_dim)
+        # Reshape: (4, 16, 16) -> (16, 4, 16) = (out_pos, groups, in_dim)
         G_per_output = G[grp_r, grp_c].permute(1, 0, 2)  # (16, 4, 16)
-        G_per_output = G_per_output.reshape(cfg.block_row, -1)  # (16, 64)
+        G_per_output = G_per_output.reshape(cfg.group_row, -1)  # (16, 64)
         
         # Now for each output position, we have a 64-dim vector
         # C is (64, 64)
         
-        # Block b corresponds to indices [b*16 : (b+1)*16] in the 64-dim space
-        start = b * cfg.block_col
-        end = (b + 1) * cfg.block_col
+        # Group b corresponds to indices [b*16 : (b+1)*16] in the 64-dim space
+        start = b * cfg.group_col
+        end = (b + 1) * cfg.group_col
         
         C_col_b = C[:, start:end]  # (64, 16)
         C_bb = C[start:end, start:end]  # (16, 16)
-        C_bb_inv = torch.linalg.inv(C_bb + 1e-6 * torch.eye(cfg.block_col, device=self.device))
+        C_bb_inv = torch.linalg.inv(C_bb + 1e-6 * torch.eye(cfg.group_col, device=self.device))
         
         # For each output position j
-        for j in range(cfg.block_row):
-            w_jb = G_per_output[j, start:end]  # (16,) - weights for block b, output j
+        for j in range(cfg.group_row):
+            w_jb = G_per_output[j, start:end]  # (16,) - weights for group b, output j
             
             # Update: w_j,unpruned <- w_j,unpruned - C_{:,b} @ C_{b,b}^{-1} @ w_jb
             update = C_col_b @ C_bb_inv @ w_jb  # (64,)
@@ -433,28 +433,28 @@ class StructuredOBSSolver:
             G_per_output[j, unpruned_mask] -= update[unpruned_mask]
         
         # Reshape back
-        G[grp_r, grp_c] = G_per_output.view(cfg.block_row, cfg.blocks_per_group, cfg.block_col).permute(1, 0, 2)
+        G[grp_r, grp_c] = G_per_output.view(cfg.group_row, cfg.blocks_per_scope, cfg.group_col).permute(1, 0, 2)
         
-    def update_weights_vectorized(self, G_view: GroupedWeightView, grp_r: int, grp_c: int, b: int):
+    def update_weights_vectorized(self, G_view: BlockedWeightView, grp_r: int, grp_c: int, b: int):
         """
-        Vectorized version of OBS weight update for a single group.
+        Vectorized version of OBS weight update for a single block.
         """
         cfg = self.config
         G = G_view.G
         
         C = self.H_inv_list[grp_c]  # (64, 64)
         
-        start = b * cfg.block_col
-        end = (b + 1) * cfg.block_col
+        start = b * cfg.group_col
+        end = (b + 1) * cfg.group_col
         
         C_col_b = C[:, start:end]  # (64, 16)
         C_bb = C[start:end, start:end]  # (16, 16)
-        C_bb_inv = torch.linalg.inv(C_bb + 1e-6 * torch.eye(cfg.block_col, device=self.device))
+        C_bb_inv = torch.linalg.inv(C_bb + 1e-6 * torch.eye(cfg.group_col, device=self.device))
         
         # G[grp_r, grp_c]: (4, 16, 16) -> (16, 64) for all outputs
-        G_grp = G[grp_r, grp_c].permute(1, 0, 2).reshape(cfg.block_row, -1)  # (16, 64)
+        G_grp = G[grp_r, grp_c].permute(1, 0, 2).reshape(cfg.group_row, -1)  # (16, 64)
         
-        # Extract block b for all outputs: (16, 16)
+        # Extract group b for all outputs: (16, 16)
         W_b = G_grp[:, start:end]  # (16, 16)
         
         # Compute update for all outputs at once: (16, 64)
@@ -473,79 +473,79 @@ class StructuredOBSSolver:
         # So for all j: (16, 64) = W_b @ temp.T = (16, 16) @ (16, 64) = (16, 64)
         update = W_b @ temp.T  # (16, 64)
         
-        # Mask pruned block
+        # Mask pruned group
         unpruned_mask = torch.ones(64, dtype=torch.bool, device=self.device)
         unpruned_mask[start:end] = False
         
         # Apply update
         G_grp[:, unpruned_mask] -= update[:, unpruned_mask]
         
-        # Zero out pruned block
+        # Zero out pruned group
         G_grp[:, start:end] = 0
         
         # Reshape back
-        G[grp_r, grp_c] = G_grp.view(cfg.block_row, cfg.blocks_per_group, cfg.block_col).permute(1, 0, 2)
+        G[grp_r, grp_c] = G_grp.view(cfg.group_row, cfg.blocks_per_scope, cfg.group_col).permute(1, 0, 2)
         
     def update_C(self, grp_c: int, b: int):
         """
-        Update C to remove pruned block b using Schur complement.
+        Update C to remove pruned group b using Schur complement.
         
         C <- C - C_{:,b} @ (C_{b,b})^{-1} @ C_{b,:}
         """
         cfg = self.config
         C = self.H_inv_list[grp_c]  # (64, 64)
         
-        start = b * cfg.block_col
-        end = (b + 1) * cfg.block_col
+        start = b * cfg.group_col
+        end = (b + 1) * cfg.group_col
         
         C_col_b = C[:, start:end]  # (64, 16)
         C_bb = C[start:end, start:end]  # (16, 16)
-        C_bb_inv = torch.linalg.inv(C_bb + 1e-6 * torch.eye(cfg.block_col, device=self.device))
+        C_bb_inv = torch.linalg.inv(C_bb + 1e-6 * torch.eye(cfg.group_col, device=self.device))
         C_b_row = C[start:end, :]  # (16, 64)
         
         # Schur complement update
         update = C_col_b @ C_bb_inv @ C_b_row  # (64, 64)
         C_new = C - update
         
-        # Zero out the pruned block rows/cols for numerical stability
+        # Zero out the pruned group rows/cols for numerical stability
         C_new[start:end, :] = 0
         C_new[:, start:end] = 0
         
         self.H_inv_list[grp_c] = C_new
         
-    def prune_step(self, G_view: GroupedWeightView) -> bool:
+    def prune_step(self, G_view: BlockedWeightView) -> bool:
         """
-        Perform one pruning step across all groups.
+        Perform one pruning step across all blocks.
         
         Returns:
-            True if pruning was performed, False if no more blocks to prune
+            True if pruning was performed, False if no more groups to prune
         """
         cfg = self.config
         
-        # Check if we have blocks left to prune
+        # Check if we have groups left to prune
         if self.remaining_to_prune.sum() == 0:
             return False
         
-        # Compute scores for all blocks
+        # Compute scores for all groups
         scores = self.compute_pruning_scores_vectorized(G_view)
         
-        # For each group that still needs pruning, find the block with minimum score
-        for grp_r in range(cfg.num_groups_row):
-            for grp_c in range(cfg.num_groups_col):
+        # For each block that still needs pruning, find the group with minimum score
+        for grp_r in range(cfg.num_scopes_row):
+            for grp_c in range(cfg.num_scopes_col):
                 if self.remaining_to_prune[grp_r, grp_c] > 0:
-                    # Get scores for this group
+                    # Get scores for this block
                     grp_scores = scores[grp_r, grp_c]  # (4,)
                     
                     # Find minimum
                     b_to_prune = torch.argmin(grp_scores).item()
                     
-                    # Prune this block
+                    # Prune this group
                     self._prune_block(G_view, grp_r, grp_c, b_to_prune)
                     
         return True
     
-    def _prune_block(self, G_view: GroupedWeightView, grp_r: int, grp_c: int, b: int):
-        """Prune a specific block and update state."""
+    def _prune_block(self, G_view: BlockedWeightView, grp_r: int, grp_c: int, b: int):
+        """Prune a specific group and update state."""
         # Update weights
         self.update_weights_vectorized(G_view, grp_r, grp_c, b)
         
@@ -558,7 +558,7 @@ class StructuredOBSSolver:
         
     def prune_all(self, W0: torch.Tensor) -> torch.Tensor:
         """
-        Prune all blocks according to config.
+        Prune all groups according to config.
         
         Args:
             W0: Original weight matrix (256, 128)
@@ -569,7 +569,7 @@ class StructuredOBSSolver:
         cfg = self.config
         
         # Create blocked view
-        B_view = BlockedWeightView(W0, cfg)
+        B_view = GroupedWeightView(W0, cfg)
         
         # Convert to grouped view
         G_view = B_view.to_grouped()
@@ -578,7 +578,7 @@ class StructuredOBSSolver:
         step = 0
         while self.prune_step(G_view):
             step += 1
-            if step >= cfg.blocks_to_prune * cfg.num_groups_row * cfg.num_groups_col:
+            if step >= cfg.groups_to_prune * cfg.num_scopes_row * cfg.num_scopes_col:
                 break
         
         # Convert back to weight matrix
@@ -592,56 +592,56 @@ class StructuredOBSSolver:
 
 class FullyVectorizedStructuredOBS(StructuredOBSSolver):
     """
-    Fully vectorized version that processes all groups simultaneously.
+    Fully vectorized version that processes all blocks simultaneously.
     """
     
-    def __init__(self, X: torch.Tensor, config: BlockConfig, device: str = 'cuda'):
+    def __init__(self, X: torch.Tensor, config: GroupConfig, device: str = 'cuda'):
         super().__init__(X, config, device)
         
         # Precompute C in a more accessible format
         # Stack all C matrices: (n_grp_c, 64, 64)
         self.C_stacked = torch.stack(self.H_inv_list)  # (2, 64, 64)
         
-    def compute_all_scores(self, G_view: GroupedWeightView) -> torch.Tensor:
+    def compute_all_scores(self, G_view: BlockedWeightView) -> torch.Tensor:
         """
-        Compute scores for all blocks in all groups simultaneously.
+        Compute scores for all groups in all blocks simultaneously.
         """
         cfg = self.config
         G = G_view.G  # (16, 2, 4, 16, 16)
         
-        # Reshape G to (n_grp_r, n_grp_c, blocks_per_group, blk_r, blk_c)
+        # Reshape G to (n_grp_r, n_grp_c, blocks_per_scope, blk_r, blk_c)
         # We need to compute Tr[G_{i,b} @ (C_{b,b})^{-1} @ G_{i,b}^T]
         
-        # For each group column, C is different
-        # For each group column grp_c, C_stacked[grp_c] is (64, 64)
+        # For each block column, C is different
+        # For each block column grp_c, C_stacked[grp_c] is (64, 64)
         
         scores = torch.zeros(
-            cfg.num_groups_row, cfg.num_groups_col, cfg.blocks_per_group,
+            cfg.num_scopes_row, cfg.num_scopes_col, cfg.blocks_per_scope,
             device=self.device
         )
         
-        for grp_c in range(cfg.num_groups_col):
+        for grp_c in range(cfg.num_scopes_col):
             C = self.C_stacked[grp_c]  # (64, 64)
             
-            # Extract diagonal blocks C_{b,b}: (4, 16, 16)
-            C_blocks = C.view(cfg.blocks_per_group, cfg.block_col, cfg.blocks_per_group, cfg.block_col)
-            C_blocks = C_blocks.permute(0, 2, 1, 3)  # (4, 4, 16, 16)
+            # Extract diagonal groups C_{b,b}: (4, 16, 16)
+            C_scopes = C.view(cfg.blocks_per_scope, cfg.group_col, cfg.blocks_per_scope, cfg.group_col)
+            C_scopes = C_scopes.permute(0, 2, 1, 3)  # (4, 4, 16, 16)
             
             # Get diagonal
-            C_bb = torch.stack([C_blocks[b, b] for b in range(cfg.blocks_per_group)])  # (4, 16, 16)
-            C_bb_inv = torch.linalg.inv(C_bb + 1e-5 * torch.eye(cfg.block_col, device=self.device))
+            C_bb = torch.stack([C_scopes[b, b] for b in range(cfg.blocks_per_scope)])  # (4, 16, 16)
+            C_bb_inv = torch.linalg.inv(C_bb + 1e-5 * torch.eye(cfg.group_col, device=self.device))
             
             # G[:, grp_c]: (16, 4, 16, 16)
             G_grp = G[:, grp_c]  # (16, 4, 16, 16)
             
             # Reshape to (16, 4, 16, 16) where last two are (out, in)
-            # We want Tr[G_b @ C_bb_inv[b] @ G_b^T] for each group row and block
+            # We want Tr[G_b @ C_bb_inv[b] @ G_b^T] for each block row and group
             
             # Method: batch matrix multiply
             # G_grp: (16, 4, 16, 16)
             # For each b in [0,3], we have 16 matrices of shape (16, 16)
             
-            for b in range(cfg.blocks_per_group):
+            for b in range(cfg.blocks_per_scope):
                 G_b = G_grp[:, b]  # (16, 16, 16) - 16 matrices of (16, 16)
                 
                 # Compute G_b @ C_bb_inv[b]: (16, 16, 16) @ (16, 16)
@@ -661,45 +661,45 @@ class FullyVectorizedStructuredOBS(StructuredOBSSolver):
         
         return scores
     
-    def batch_update_weights(self, G_view: GroupedWeightView, prune_indices: torch.Tensor):
+    def batch_update_weights(self, G_view: BlockedWeightView, prune_indices: torch.Tensor):
         """
-        Update weights for multiple pruned blocks simultaneously.
+        Update weights for multiple pruned groups simultaneously.
         
         Args:
             G_view: Weight view
-            prune_indices: (n_grp_r, n_grp_c) tensor of block indices to prune
+            prune_indices: (n_grp_r, n_grp_c) tensor of group indices to prune
         """
         cfg = self.config
         G = G_view.G
         
-        # Process each group column separately (since they have different C)
-        for grp_c in range(cfg.num_groups_col):
+        # Process each block column separately (since they have different C)
+        for grp_c in range(cfg.num_scopes_col):
             C = self.C_stacked[grp_c]  # (64, 64)
             
-            # Get all group rows for this column
-            blocks_to_prune = prune_indices[:, grp_c]  # (16,)
+            # Get all block rows for this column
+            groups_to_prune = prune_indices[:, grp_c]  # (16,)
             
-            # For each unique block to prune in this column
-            for b in range(cfg.blocks_per_group):
-                mask = (blocks_to_prune == b) & (~self.pruned_mask[:, grp_c, b])
+            # For each unique group to prune in this column
+            for b in range(cfg.blocks_per_scope):
+                mask = (groups_to_prune == b) & (~self.pruned_mask[:, grp_c, b])
                 if mask.sum() == 0:
                     continue
                 
                 grp_r_list = torch.where(mask)[0]
                 
-                start = b * cfg.block_col
-                end = (b + 1) * cfg.block_col
+                start = b * cfg.group_col
+                end = (b + 1) * cfg.group_col
                 
                 C_col_b = C[:, start:end]  # (64, 16)
                 C_bb = C[start:end, start:end]  # (16, 16)
-                C_bb_inv = torch.linalg.inv(C_bb + 1e-6 * torch.eye(cfg.block_col, device=self.device))
+                C_bb_inv = torch.linalg.inv(C_bb + 1e-6 * torch.eye(cfg.group_col, device=self.device))
                 
                 # Precompute temp = C_col_b @ C_bb_inv: (64, 16)
                 temp = C_col_b @ C_bb_inv
                 
                 for grp_r in grp_r_list:
                     # G[grp_r, grp_c]: (4, 16, 16) -> (16, 64)
-                    G_grp = G[grp_r, grp_c].permute(1, 0, 2).reshape(cfg.block_row, -1)  # (16, 64)
+                    G_grp = G[grp_r, grp_c].permute(1, 0, 2).reshape(cfg.group_row, -1)  # (16, 64)
                     
                     W_b = G_grp[:, start:end]  # (16, 16)
                     
@@ -713,27 +713,27 @@ class FullyVectorizedStructuredOBS(StructuredOBSSolver):
                     G_grp[:, start:end] = 0
                     
                     # Reshape back
-                    G[grp_r, grp_c] = G_grp.view(cfg.block_row, cfg.blocks_per_group, cfg.block_col).permute(1, 0, 2)
+                    G[grp_r, grp_c] = G_grp.view(cfg.group_row, cfg.blocks_per_scope, cfg.group_col).permute(1, 0, 2)
                     
                     # Mark pruned
                     self.pruned_mask[grp_r, grp_c, b] = True
                     self.remaining_to_prune[grp_r, grp_c] -= 1
     
-    def batch_update_C(self, grp_c: int, pruned_blocks: List[int]):
-        """Update C after pruning multiple blocks."""
+    def batch_update_C(self, grp_c: int, pruned_scopes: List[int]):
+        """Update C after pruning multiple groups."""
         cfg = self.config
         C = self.C_stacked[grp_c].clone()
         
-        for b in pruned_blocks:
+        for b in pruned_scopes:
             if self.pruned_mask[0, grp_c, b]:  # Check if already pruned
                 continue
                 
-            start = b * cfg.block_col
-            end = (b + 1) * cfg.block_col
+            start = b * cfg.group_col
+            end = (b + 1) * cfg.group_col
             
             C_col_b = C[:, start:end]
             C_bb = C[start:end, start:end]
-            C_bb_inv = torch.linalg.inv(C_bb + 1e-6 * torch.eye(cfg.block_col, device=self.device))
+            C_bb_inv = torch.linalg.inv(C_bb + 1e-6 * torch.eye(cfg.group_col, device=self.device))
             C_b_row = C[start:end, :]
             
             C = C - C_col_b @ C_bb_inv @ C_b_row
@@ -750,11 +750,11 @@ def demo():
     """Demonstrate the structured OBS pruning."""
     torch.manual_seed(42)
     
-    config = BlockConfig(
+    config = GroupConfig(
         n=256, k=128,
-        block_row=16, block_col=16,
-        group_row=1, group_col=4,
-        blocks_to_prune=2
+        group_row=16, group_col=16,
+        block_row=1, block_col=4,
+        groups_to_prune=2
     )
     
     # Create random input and weights
@@ -769,20 +769,20 @@ def demo():
     W_pruned = solver.prune_all(W0)
     
     # Check sparsity pattern
-    B_view = BlockedWeightView(W_pruned, config)
+    B_view = GroupedWeightView(W_pruned, config)
     G_view = B_view.to_grouped()
     
     print("Grouped view shape:", G_view.G.shape)
     print("Expected: (16, 2, 4, 16, 16)")
     
-    # Check which blocks are zero
-    G_flat = G_view.flatten_blocks()  # (16, 2, 4, 256)
+    # Check which groups are zero
+    G_flat = G_view.flatten_groups()  # (16, 2, 4, 256)
     block_norms = G_flat.norm(dim=-1)  # (16, 2, 4)
     
-    print("\nBlock norms (should see 2 zeros per group):")
-    for grp_r in range(config.num_groups_row):
-        for grp_c in range(config.num_groups_col):
-            print(f"Group ({grp_r}, {grp_c}): {block_norms[grp_r, grp_c].tolist()}")
+    print("\nBlock norms (should see 2 zeros per block):")
+    for grp_r in range(config.num_scopes_row):
+        for grp_c in range(config.num_scopes_col):
+            print(f"Block ({grp_r}, {grp_c}): {block_norms[grp_r, grp_c].tolist()}")
     
     # Compute loss
     loss_orig = torch.norm(X @ W0.T - X @ W0.T)**2
