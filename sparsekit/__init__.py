@@ -12,7 +12,6 @@ from . import linalg
 from .block import BlockSpec, BlockCoupling
 from .scope import ScopeSpec, ScopeCoupling
 from .view import View
-from .viz import draw_layout
 from .pruners import obs, obd
 from .pruners.obs import StructuredOBS
 
@@ -30,5 +29,4 @@ __all__ = [
     "ScopeCoupling",
     "View",
     "StructuredOBS",
-    "draw_layout",
 ]

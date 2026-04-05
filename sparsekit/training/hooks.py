@@ -1,10 +1,7 @@
 # Copyright (c) 2026 - Ayoub Ghriss & Contributors
 # Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
 # Non-commercial use only; contact us for commercial licensing.
-"""
-Licensed under CC BY-NC 4.0 (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
-Non-commercial use only; contact us for commercial licensing.
-"""
+
 
 from typing import Generator, Optional
 from contextlib import contextmanager
@@ -198,11 +195,11 @@ def print_model_sparsity(model: nn.Module, threshold: float = 1e-8):
     print("-" * 90)
 
 
-# Helper function for soft-thresholding
-@torch.no_grad()
-def soft_threshold(x, thresh):
-    thresh = torch.tensor(max(0.0, thresh), dtype=x.dtype, device=x.device)
-    return torch.sign(x) * torch.relu(torch.abs(x) - thresh)
+# # Helper function for soft-thresholding
+# @torch.no_grad()
+# def soft_threshold(x, thresh):
+#     thresh = torch.tensor(max(0.0, thresh), dtype=x.dtype, device=x.device)
+#     return torch.sign(x) * torch.relu(torch.abs(x) - thresh)
 
 
 def ensure_true_ratio(mask: torch.Tensor, target_ratio: float) -> torch.Tensor:

@@ -6,15 +6,12 @@
 
 from typing import Optional, Tuple
 
-from torch import Tensor
+import torch
 
-from .kernels import (
-    kth_largest as _kth_largest_impl,
-    mid_kth_largest as _mid_kth_largest_impl,
-)
+from .kernels import kth_largest as _kth_largest_impl
+from .kernels import mid_kth_largest as _mid_kth_largest_impl
 
-
-# ── Dimension reshaping ─────────────────────────────────────────────
+Tensor = torch.Tensor
 
 
 def interleave_unsqueeze(t: Tensor) -> Tensor:
@@ -59,9 +56,7 @@ def merge_odd_dims(t: Tensor) -> Tensor:
     return t.reshape(*even_shape, -1)
 
 
-def unmerge_odd_dims(
-    t: Tensor, odd_dims: Tuple[int, ...]
-) -> Tensor:
+def unmerge_odd_dims(t: Tensor, odd_dims: Tuple[int, ...]) -> Tensor:
     """Inverse of ``merge_odd_dims``.
 
     Args:
@@ -90,12 +85,17 @@ def unmerge_odd_dims(
     return t.permute(inv_perm)
 
 
+def get_dtype_epsilon(dtype, epsilon):
+    if epsilon is None:
+        epsilon = torch.finfo(dtype).eps
+    assert epsilon >= 0
+    return epsilon
+
+
 # ── Permutation utilities ───────────────────────────────────────────
 
 
-def normalize_order(
-    order: Optional[Tuple[int, ...]], dim: int
-) -> Tuple[int, ...]:
+def normalize_order(order: Optional[Tuple[int, ...]], dim: int) -> Tuple[int, ...]:
     """Validate that ``order`` is a permutation of range(dim).
 
     Returns the identity permutation if order is None or empty.
@@ -112,15 +112,12 @@ def normalize_order(
     o = list(order)
     if set(o) != set(range(dim)):
         raise ValueError(
-            f"order must be a permutation of "
-            f"0..{dim - 1}, got {order}"
+            f"order must be a permutation of " f"0..{dim - 1}, got {order}"
         )
     return tuple(o)
 
 
-def inverse_permutation(
-    perm: Tuple[int, ...]
-) -> Tuple[int, ...]:
+def inverse_permutation(perm: Tuple[int, ...]) -> Tuple[int, ...]:
     """Compute the inverse of a permutation.
 
     Args:
@@ -150,9 +147,7 @@ def kth_largest(
     based on (K, k). Flattens first when ``dim is None``.
     """
     if dim is None:
-        return _kth_largest_impl(
-            x.view(-1), k, dim=0, **kwargs
-        ).squeeze()
+        return _kth_largest_impl(x.view(-1), k, dim=0, **kwargs).squeeze()
     return _kth_largest_impl(x, k, dim=dim, **kwargs)
 
 
@@ -168,7 +163,5 @@ def mid_kth_largest(
     based on (K, k). Flattens first when ``dim is None``.
     """
     if dim is None:
-        return _mid_kth_largest_impl(
-            x.reshape(-1), k, dim=0, **kwargs
-        ).squeeze()
+        return _mid_kth_largest_impl(x.reshape(-1), k, dim=0, **kwargs).squeeze()
     return _mid_kth_largest_impl(x, k, dim=dim, **kwargs)

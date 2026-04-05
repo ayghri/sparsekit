@@ -59,7 +59,7 @@ Benchmark Results
 
 **Key comparisons:**
 
-- **True OBS largest-first beats SparseGPT by 16.0%** — per-row C with Schur updates, largest-cost groups first
+- **True OBS largest-first beats SparseGPT by 16.0%** — per-row C with Schur updates, largest-cost blocks first
 - **OBS-ord (shared C, Schur, fp16) beats SparseGPT by 5.2%** in 14.8s — good speed/quality tradeoff
 - **Largest-first ordering improves True OBS by 1.8%** over left-to-right (11.87% vs 12.09%)
 - **OBS interleaved=64 nearly matches SparseGPT** (−0.3%) at 6s — practical fast alternative
@@ -100,7 +100,7 @@ True OBS (first 32 rows only — O(B×K²) memory)
 2. Coupled 2:4 Sparsity
 ------------------------
 
-Pairs of elements 8 columns apart. ``GroupView (M, K/16, 8, 2):(K, 16, 1, 8)``.
+Pairs of elements 8 columns apart. ``View (M, K/16, 8, 2):(K, 16, 1, 8)``.
 ``block_shape=(1,1,1,2)``, ``scope_shape=(1,1,4,1)``, keep 2 of 4 pairs. All 2560 rows.
 
 .. list-table::
@@ -151,7 +151,7 @@ Pairs of elements 8 columns apart. ``GroupView (M, K/16, 8, 2):(K, 16, 1, 8)``.
 3. 4:8 Structured Sparsity
 ---------------------------
 
-``block_shape=(1,2)``, ``scope_shape=(1,4)``. 4 groups of 2 per block, prune 2 groups. All 2560 rows.
+``block_shape=(1,2)``, ``scope_shape=(1,4)``. 4 blocks of 2 elements per scope, prune 2 blocks. All 2560 rows.
 
 .. list-table::
    :header-rows: 1
@@ -224,11 +224,11 @@ True OBS (first 32 rows only)
 
 ----
 
-4. 16-Column Group, 8-Row Coupled Sparsity
+4. 16-Column Block, 8-Row Coupled Sparsity
 -------------------------------------------
 
-``GroupView(size=(8, 2, K), stride=(K, 8K, 1))`` on 16-row chunks.
-``block_shape=(1,1,16)``, ``scope_shape=(1,2,1)``, keep 1 of 2 groups per block.
+``View(size=(8, 2, K), stride=(K, 8K, 1))`` on 16-row chunks.
+``block_shape=(1,1,16)``, ``scope_shape=(1,2,1)``, keep 1 of 2 blocks per scope.
 160 chunks of 16 rows. All 2560 rows.
 
 .. list-table::
@@ -243,11 +243,11 @@ True OBS (first 32 rows only)
      - 48.83%
      - 50.0%
      - 0.05s
-   * - OBS full group
+   * - OBS full block
      - 34.19%
      - 50.0%
      - 9.8s
-   * - SparseGPT group
+   * - SparseGPT block
      - 33.46%
      - 50.0%
      - 146.3s
@@ -258,7 +258,7 @@ True OBS (first 32 rows only)
 
 **Key comparisons:**
 
-- **True OBS ng=16 beats SparseGPT by 19.6%** — per-row Schur feasible here (only 608 partitions)
+- **True OBS ng=16 beats SparseGPT by 19.6%** — per-row Schur feasible here (only 608 scopes)
 - True OBS beats OBS full by **21.3%**
 - OBS full is **14.9x faster** than SparseGPT
 
@@ -311,7 +311,7 @@ Summary
      - 19.04%
      - −0.2%
      - 5.5s
-   * - 16-col group (all rows)
+   * - 16-col block (all rows)
      - **True OBS ng=16**
      - **26.91%**
      - **+19.6%**
@@ -323,5 +323,5 @@ Summary
 - **OBS-ord (shared C, Schur, fp16, largest-first) beats SparseGPT by 5%** in 15s — practical mid-tier option
 - **OBS interleaved (shared C, re-select masks per split) matches SparseGPT within 0.2–0.3%** in 3–6s — the practical fast method
 - Key insight: **mask re-selection with updated C** is what matters. OBS split (fixed masks) always loses to OBS full. OBS interleaved (updated masks) nearly matches SparseGPT.
-- **Largest-first group ordering** gives free +2% on True OBS, +5% on shared-C OBS
+- **Largest-first block ordering** gives free +2% on True OBS, +5% on shared-C OBS
 - **For coupled 2:4, OBS interleaved dominates**: matches SparseGPT quality but is **30x faster** (5.4s vs 159.5s)

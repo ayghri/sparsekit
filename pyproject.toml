@@ -2,14 +2,19 @@
 name = "sparsekit"
 version = "0.1.0"
 description = "Sparsity Kit for Structured Sparsity Specification"
-authors = ["Anonymous Authors"]
+authors = ["Ayoub Ghriss research@ayghri.me"]
 readme = "README.md"
-packages = [{include = "sparsekit"}]
+packages = [{ include = "sparsekit" }]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<3.14"
+python = ">=3.11,<3.14"
 torch = ">=2.8.0"
-triton = "3.4.0"
+triton = ">=3.4.0"
+numpy = ">=2.4.0"
+matplotlib = { version = "*", optional = true }
+
+[tool.poetry.extras]
+viz = ["matplotlib"]
 
 [build-system]
 requires = ["poetry-core"]
@@ -17,3 +22,6 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+license = { text = "CC BY-NC 4.0" }
+license-files = ["LICENSE"]

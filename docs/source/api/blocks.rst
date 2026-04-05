@@ -1,4 +1,4 @@
-Group Specification
+Block Specification
 ===================
 
 .. automodule:: sparsekit.block

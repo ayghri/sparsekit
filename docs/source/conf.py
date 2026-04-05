@@ -1,8 +1,7 @@
 """Sphinx configuration for sparsekit documentation."""
 
 project = "SparseKit"
-author = "Anonymous"
-copyright = "2025, Anonymous"
+author = "Ayoub Ghriss"
 release = "0.1.0"
 
 extensions = [
@@ -34,7 +33,7 @@ html_theme_options = {
     "navigation_depth": 3,
 }
 
-exclude_patterns = ["_build"]
+# exclude_patterns = ["_build"]
 html_static_path = ["_static"]
 html_logo = "_static/sparsekitlogo.png"
 html_favicon = "_static/sparsekitlogo.png"

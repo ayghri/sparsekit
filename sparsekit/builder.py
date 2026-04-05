@@ -38,7 +38,7 @@ class SparsityBuilder:
     """
 
     def __init__(self):
-        self._groups: Dict[str, BlockSpec] = {}
+        self._blocks: Dict[str, BlockSpec] = {}
         self._g_couplings: Dict[str, BlockCoupling] = {}
         self._scopes: Dict[str, ScopeSpec] = {}
         self._s_couplings: Dict[str, ScopeCoupling] = {}
@@ -46,35 +46,35 @@ class SparsityBuilder:
     def add_block(
         self, param: Parameter, block_shape: Tuple[int, ...], name: str
     ):
-        """Register a single parameter with its group decomposition."""
-        assert name not in self._groups
+        """Register a single parameter with its block decomposition."""
+        assert name not in self._blocks
         view = View.from_existing(param)
         # pylint: disable=abstract-class-instantiated
-        self._groups[name] = BlockSpec(view, block_shape, name=name)
+        self._blocks[name] = BlockSpec(view, block_shape, name=name)
         return self
 
     def couple_blocks(
-        self, group_names: List[str], orders: List[Tuple[int, ...]], name: str
+        self, block_names: List[str], orders: List[Tuple[int, ...]], name: str
     ):
-        """Create a BlockCoupling from previously added groups."""
+        """Create a BlockCoupling from previously added blocks."""
         self._g_couplings[name] = BlockCoupling(
-            [self._groups[n] for n in group_names], orders, name=name
+            [self._blocks[n] for n in block_names], orders, name=name
         )
         return self
 
     def get_block(self, name: str) -> BlockCoupling | BlockSpec:
         """Retrieve a BlockSpec or BlockCoupling by name."""
-        if name in self._groups:
-            return self._groups[name]
+        if name in self._blocks:
+            return self._blocks[name]
         return self._g_couplings[name]
 
     def add_scope(
-        self, group_name: str, scope_shape: Tuple[int, ...], name: str
+        self, block_name: str, scope_shape: Tuple[int, ...], name: str
     ):
-        """Add a ScopeSpec over an existing group or coupling."""
+        """Add a ScopeSpec over an existing block or coupling."""
         assert name not in self._scopes
         self._scopes[name] = ScopeSpec(
-            self.get_block(group_name),
+            self.get_block(block_name),
             shape=scope_shape,
             name=name,
         )

@@ -4,7 +4,7 @@ from torch.nn import Parameter
 from sparsekit.block import BlockSpec
 from sparsekit.view import View
 from sparsekit.block import BlockCoupling
-from sparsekit.types import ShapeMismatchError
+from sparsekit.block import ShapeMismatchError
 import math
 
 
@@ -44,7 +44,7 @@ class TestSoftThresholdAdam:
         spec_2x2._soft_threshold_diag_cond(thresholds, conditioners)
 
         expected = torch.full((2, 2), 0.75)
-        assert torch.allclose(spec_2x2.data, expected, atol=1e-5)
+        assert torch.allclose(spec_2x2.data, expected)
 
     def test_adam_varying_conditioner(self, spec_2x2):
         """
@@ -76,7 +76,7 @@ class TestSoftThresholdAdam:
         spec_2x2._soft_threshold_diag_cond(thresholds, conditioners)
 
         expected = torch.full((2, 2), 0.75)
-        assert torch.allclose(spec_2x2.data, expected, atol=1e-5)
+        assert torch.allclose(spec_2x2.data, expected)
 
     def test_adam_high_threshold_zeros_out(self, spec_2x2):
         """
@@ -101,15 +101,17 @@ class TestSoftThresholdAdam:
         Case 2: norm=2, threshold=3.0. denom=-1.0 (not >0). Should zero out.
         """
         # Case 1: Survive
-        spec_survive = BlockSpec(
-            Parameter(torch.ones(2, 2)), shape=(2, 2)
-        )
+        spec_survive = BlockSpec(Parameter(torch.ones(2, 2)), shape=(2, 2))
         cond = torch.ones_like(spec_survive.data)
-        thresh_survive = torch.tensor([0.9]).reshape(
-            spec_survive.grid_shape
-        )
+        thresh_survive = torch.tensor([0.9]).reshape(spec_survive.grid_shape)
         spec_survive._soft_threshold_diag_cond(thresh_survive, cond)
         assert not torch.allclose(spec_survive.data, torch.zeros(2, 2))
+        # norm=2, threshold=0.9, H=1: mu/(1+mu)*2=0.9 → mu=0.9/1.1 → scale=1.1/2=0.55
+        mu = 0.9 / 1.1
+        expected_scale = 1.0 / (1.0 + mu)
+        assert torch.allclose(
+            spec_survive.data, torch.full((2, 2), expected_scale)
+        )
 
         # Case 2: Zero out
         spec_die = BlockSpec(Parameter(torch.ones(2, 2)), shape=(2, 2))
@@ -144,9 +146,7 @@ class TestSoftThresholdAdam:
         spec._soft_threshold_diag_cond(thresholds, H)
 
         # Top-Left should be non-zero (specifically 0.75 as calculated before)
-        assert torch.allclose(
-            spec.data[0:2, 0:2], torch.full((2, 2), 0.75), atol=1e-5
-        )
+        assert torch.allclose(spec.data[0:2, 0:2], torch.full((2, 2), 0.75))
 
         # Bottom-Right should be zero
         assert torch.allclose(spec.data[2:4, 2:4], torch.zeros(2, 2))
@@ -158,7 +158,7 @@ class TestSoftThresholdAdam:
         # we need 1.0 = u^2 (sum_i (h_i v_i/(h_i+u))^2 )
         # since ||hv|| = (5.3125)^.5 = 2.3048 > 1.0, a solution exists
         # we get mu = 1.16917
-        # and w = (h / (h+u)) * v = 1/mu
+        # and w = (h / (h+u)) * v = h / (h + mu)  (since v=ones)
 
         h = torch.tensor([[0.25, 0.5], [1.0, 2.0]])
         v = Parameter(torch.ones(2, 2))
@@ -237,7 +237,7 @@ class TestBlockSpecBasics:
         # 4x4 with 2x2 groups -> 2x2 grid
         assert spec.grid_shape == (2, 2)
         assert spec.num_blocks == 4
-        assert spec.numel() == 4
+        assert spec.block_numel == 4
 
     def test_block_grid_shape_single_block(self):
         p = Parameter(torch.zeros(4, 4))
@@ -246,7 +246,7 @@ class TestBlockSpecBasics:
         # Single group -> grid (1,1)
         assert spec.grid_shape == (1, 1)
         assert spec.num_blocks == 1
-        assert spec.numel() == 16
+        assert spec.block_numel == 16
 
     def test_invalid_block_shape_dimension_mismatch(self):
         p = Parameter(torch.zeros(4, 4))
@@ -267,13 +267,28 @@ class TestBlockSpecBasics:
         assert view.shape == (2, 2, 2, 2)
 
         # block_norm should match manual computation
+        # Block (0,0)=[[0,1],[4,5]], (0,1)=[[2,3],[6,7]], (1,0)=[[8,9],[12,13]], (1,1)=[[10,11],[14,15]]
         norms = spec.norms(spec.data)
         assert norms.shape == spec.grid_shape
+        expected_norms = torch.tensor(
+            [
+                [
+                    float((0**2 + 1**2 + 4**2 + 5**2) ** 0.5),
+                    float((2**2 + 3**2 + 6**2 + 7**2) ** 0.5),
+                ],
+                [
+                    float((8**2 + 9**2 + 12**2 + 13**2) ** 0.5),
+                    float((10**2 + 11**2 + 14**2 + 15**2) ** 0.5),
+                ],
+            ]
+        )
+        assert torch.allclose(norms, expected_norms)
 
         # Broadcast a simple per-group multiplier and ensure shape
         block_vals = torch.ones(spec.grid_shape)
         full = spec.broadcast_block_to_element(block_vals)
         assert full.shape == spec.view.shape
+        assert torch.allclose(full, torch.ones_like(full))
 
     def test_apply_mask_and_multiplier(self):
         p = Parameter(torch.ones(4, 4))
@@ -312,6 +327,8 @@ class TestSparseNodeSoftThreshold:
         # Euclidean soft-threshold should shrink but not zero everything
         assert not torch.allclose(spec.data, before)
         assert torch.any(spec.data != 0.0)
+        # norm=2, threshold=0.5: Euclidean factor = 1 - 0.5/2 = 0.75
+        assert torch.allclose(spec.data, torch.full((4, 4), 0.75))
 
 
 class TestBlockCoupling:
@@ -459,8 +476,8 @@ class TestBlockCoupling:
         coupling._soft_threshold_diag_cond(thresholds, conditioners)
 
         scale = 1.0 - 1.0 / math.sqrt(8)
-        assert torch.allclose(s1.data, torch.full((2, 2), scale), atol=1e-4)
-        assert torch.allclose(s2.data, torch.full((1, 4), scale), atol=1e-4)
+        assert torch.allclose(s1.data, torch.full((2, 2), scale))
+        assert torch.allclose(s2.data, torch.full((1, 4), scale))
 
     def test_coupling_mismatched_block_grids_raises(self):
         """Specs with incompatible group grids should fail during construction."""
@@ -469,9 +486,7 @@ class TestBlockCoupling:
 
         # Make specs whose block_grid_shapes, once permuted, cannot match
         s1 = BlockSpec(p1, shape=(2, 2))  # block_grid_shape (2,2)
-        s2 = BlockSpec(
-            p2, shape=(2, 2)
-        )  # same grid but we'll use bad order
+        s2 = BlockSpec(p2, shape=(2, 2))  # same grid but we'll use bad order
 
         # First spec uses identity order, second uses invalid permutation length
         with pytest.raises(ValueError):
@@ -496,11 +511,9 @@ class TestBlockCoupling:
 
     def test_coupling_mixed_scopes_3d(self):
         """
-        Two groups.
-        Group 1: W1=[3], W2=[4] (Norm 5). Threshold 2.5 -> Survives (scaled 0.5).
-        Group 2: W1=[3], W2=[4] (Norm 5). Threshold 6.0 -> Dies.
-
-        Tensors will be shape (2,1).
+        Two 3D tensor specs coupled via reordered grids.
+        p1: ones(4,5,8), block (2,1,2) -> grid (2,5,4)
+        p2: ones(8,4,5)/2, block (2,2,1) -> grid (4,2,5); coupled via (1,2,0) permutation
         """
         p1 = Parameter(torch.ones(4, 5, 8))
         s1 = BlockSpec(p1, shape=(2, 1, 2))
@@ -520,10 +533,144 @@ class TestBlockCoupling:
 
         coupling.soft_threshold(thresholds, conditioners)
 
-        # First group scaled by 0.5
-        assert torch.allclose(p1.data - 0.5528, torch.zeros_like(p1), atol=1e-4)
+        # Combined block: 4 elements from p1 (val=1) + 4 from p2 (val=0.5), H=1
+        # ||Hw|| = sqrt(4*1^2 + 4*0.5^2) = sqrt(5); threshold=1
+        # mu/(1+mu)*sqrt(5)=1 → scale = 1/(1+mu) = 1 - 1/sqrt(5)
+        scale = 1.0 - 1.0 / math.sqrt(5.0)
+        assert torch.allclose(p1.data, torch.full_like(p1.data, scale))
+        assert torch.allclose(p2.data, torch.full_like(p2.data, 0.5 * scale))
 
-        # Second group zeroed
-        assert torch.allclose(
-            p2.data - 0.27645, torch.zeros_like(p2), atol=1e-4
+
+class TestBlockSoftThresholdNotebook:
+    """Tests derived from playground/notebooks/test_soft.ipynb.
+
+    The notebook validates three operating modes of BlockSpec.soft_threshold:
+    1. Scalar mode (block_shape=(1,1)): reduces to element-wise L1 proximal.
+    2. Block L2 mode (block_shape=(1,2), no conditioner): group proximal.
+    3. Conditioned mode (block_shape=(1,2), diagonal H): weighted proximal.
+    """
+
+    def test_scalar_block_matches_elementwise_prox(self):
+        # block_shape=(1,1): each element is its own block.
+        # Euclidean soft-threshold on a size-1 block = scalar L1 proximal:
+        #   sign(x) * max(|x| - λ, 0)
+        x = torch.tensor(
+            [
+                [1.5410, -0.2934, -2.1788, 0.5684],
+                [-1.0845, -1.3986, 0.4033, 0.8380],
+                [-0.7193, -0.4033, -0.5966, 0.1820],
+            ]
         )
+        p = Parameter(x.clone())
+        spec = BlockSpec(p, shape=(1, 1))
+
+        lam = 0.1
+        thresholds = torch.full(spec.grid_shape, lam)
+        spec.soft_threshold(thresholds)
+
+        expected = torch.sign(x) * torch.clamp(x.abs() - lam, min=0)
+        assert torch.allclose(spec.data, expected, atol=1e-6)
+
+    def test_block_l2_soft_threshold_no_conditioner(self):
+        # block_shape=(1,2): blocks of 2 columns.
+        # For each 2-element block g: result = (1 - λ/||g||₂)₊ * g
+        x = torch.tensor(
+            [
+                [1.5410, -0.2934, -2.1788, 0.5684],
+                [-1.0845, -1.3986, 0.4033, 0.8380],
+                [-0.7193, -0.4033, -0.5966, 0.1820],
+            ]
+        )
+        p = Parameter(x.clone())
+        spec = BlockSpec(p, shape=(1, 2))
+
+        lam = 0.1
+        thresholds = torch.full(spec.grid_shape, lam)
+        spec.soft_threshold(thresholds)
+
+        # Reference: group proximal applied per (1,2) block
+        x_view = x.view(3, 2, 2)
+        norms = x_view.norm(dim=-1, keepdim=True)
+        expected = (1.0 - lam / norms).clamp(min=0.0) * x_view
+        assert torch.allclose(spec.data, expected.view(3, 4), atol=1e-6)
+
+    def test_block_l2_zeros_small_norm_blocks(self):
+        # Blocks whose L2 norm < threshold are fully zeroed.
+        # Blocks whose L2 norm > threshold are shrunk but not zeroed.
+        x = torch.tensor([[3.0, 4.0, 0.05, 0.0]])  # norms: 5.0, 0.05
+        p = Parameter(x.clone())
+        spec = BlockSpec(p, shape=(1, 2))
+
+        lam = 0.1
+        thresholds = torch.full(spec.grid_shape, lam)
+        spec.soft_threshold(thresholds)
+
+        # Block 0: norm=5 > 0.1 → survives: scale=(1-0.1/5)=0.98
+        assert torch.allclose(
+            spec.data[0, :2], torch.tensor([3.0, 4.0]) * 0.98, atol=1e-6
+        )
+        # Block 1: norm=0.05 < 0.1 → zeroed
+        assert torch.allclose(spec.data[0, 2:], torch.zeros(2), atol=1e-6)
+
+    def test_conditioned_block_soft_threshold_surviving(self):
+        # block_shape=(1,2) with uniform H=2, x=[3,4], λ=1.
+        # Algorithm finds μ s.t. zeta(μ) = μ * ||H*x/(H+μ)||₂ = λ.
+        # With uniform H=h: zeta(μ) = μ*h/(h+μ) * ||x||₂
+        #   μ*2*5/(2+μ)=1  →  10μ=2+μ  →  μ=2/9
+        # result = H/(H+μ)*x = 2/(2+2/9)*[3,4] = (9/10)*[3,4] = [2.7, 3.6]
+        x = torch.tensor([[3.0, 4.0]])
+        H = torch.full_like(x, 2.0)
+
+        p = Parameter(x.clone())
+        spec = BlockSpec(p, shape=(1, 2))
+        thresholds = torch.tensor([[1.0]])
+
+        spec.soft_threshold(thresholds, conditioners=H)
+
+        expected = torch.tensor([[2.7, 3.6]])
+        assert torch.allclose(spec.data, expected, atol=1e-4)
+
+    def test_conditioned_block_soft_threshold_zeroed(self):
+        # block_shape=(1,2) with H=2, x=[0.02, 0.04], λ=0.1.
+        # ||H*x||₂ = ||[0.04, 0.08]||₂ = sqrt(0.008) ≈ 0.0894 < 0.1
+        # denom = ||H*x|| - λ < 0 → block is zeroed.
+        x = torch.tensor([[0.02, 0.04]])
+        H = torch.full_like(x, 2.0)
+
+        p = Parameter(x.clone())
+        spec = BlockSpec(p, shape=(1, 2))
+        thresholds = torch.tensor([[0.1]])
+
+        spec.soft_threshold(thresholds, conditioners=H)
+
+        assert torch.allclose(spec.data, torch.zeros_like(x))
+
+    def test_conditioned_fixed_point(self):
+        # Notebook verification: result = H/(H+μ)*x for scalar μ within each block.
+        # Block 0: x=[3,4], H=[1,4], λ=1 → survives (||H*x||₂=sqrt(9+256)>>1)
+        # Block 1: x=[0.1,0.1], H=[1,1], λ=1 → ||H*x||₂=sqrt(0.02)<1 → zeroed
+        x = torch.tensor([[3.0, 4.0, 0.1, 0.1]])
+        H = torch.tensor([[1.0, 4.0, 1.0, 1.0]])
+
+        p = Parameter(x.clone())
+        spec = BlockSpec(p, shape=(1, 2))
+        thresholds = torch.tensor([[1.0, 1.0]])
+
+        spec.soft_threshold(thresholds, conditioners=H)
+        result = spec.data
+
+        # Block 1 zeroed
+        assert torch.allclose(result[0, 2:], torch.zeros(2))
+
+        # Block 0 surviving: verify result = H/(H+μ)*x for a consistent scalar μ
+        # Extract μ per element: μ_i = H_i*(x_i/w_i - 1)
+        w = result[0, :2]
+        h = H[0, :2]
+        xb = x[0, :2]
+        mu_per_elem = h * (xb / w - 1)
+        assert torch.allclose(mu_per_elem[0:1], mu_per_elem[1:2], atol=1e-4), (
+            f"μ inconsistent across block elements: {mu_per_elem.tolist()}"
+        )
+        # And the zeta condition: μ * ||w||₂ == λ
+        mu = mu_per_elem[0].item()
+        assert abs(mu * w.norm().item() - 1.0) < 1e-4

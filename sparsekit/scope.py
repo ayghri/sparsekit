@@ -2,7 +2,7 @@
 # Licensed under CC BY-NC 4.0
 # (see LICENSE or https://creativecommons.org/licenses/by-nc/4.0/)
 # Non-commercial use only; contact us for commercial licensing.
-"""Scope-level sparsity specification over group grids."""
+"""Scope-level sparsity specification over block grid."""
 
 from dataclasses import dataclass, field
 from typing import Optional, Tuple, List, Dict, Set, Mapping, Iterable
@@ -16,15 +16,16 @@ from abc import abstractmethod, ABC
 
 
 from .view import View
-from .block import BlockSpec, BlockCoupling
+from .block import SparseBlock
 
 from .tensor_ops import merge_odd_dims, append_odd_dims
 from .tensor_ops import normalize_order
 from .tensor_ops import unmerge_odd_dims
 from .tensor_ops import inverse_permutation
 from .tensor_ops import kth_largest
-from .types import CouplingError
-from .types import Values
+from .tensor_ops import get_dtype_epsilon
+from .block import Values
+from .block import CouplingError
 
 
 class SparseScope(ABC):
@@ -41,10 +42,10 @@ class SparseScope(ABC):
         """Total number of scopes."""
         return math.prod(self.grid_shape)
 
-    @property
+    @cached_property
     @abstractmethod
-    def block_numel(self) -> int:
-        """Number of groups per scope."""
+    def scope_numel(self) -> int:
+        """Number of blocks per scope."""
         pass
 
     @abstractmethod
@@ -52,12 +53,12 @@ class SparseScope(ABC):
         pass
 
     @abstractmethod
-    def specs(self) -> Iterable[BlockSpec]:
+    def specs(self) -> Iterable[SparseBlock]:
         pass
 
     @property
     @abstractmethod
-    def data(self) -> Mapping["BlockSpec", Tensor] | Tensor:
+    def data(self) -> Mapping[SparseBlock, Tensor] | Tensor:
         """Raw tensor data of the underlying parameter(s)."""
         pass
 
@@ -66,12 +67,12 @@ class SparseScope(ABC):
     def hard_threshold(
         self,
         thresholds: Optional[Tensor] = None,
-        num_nz: Optional[int] = None,
+        nnz: Optional[int] = None,
         values: Values = None,
         sparsity: Optional[float] = None,
     ):
         """
-        Zeros out groups in-place based on scope-level thresholds.
+        Zeros out blocks in-place based on scope-level thresholds.
         """
         pass
 
@@ -83,8 +84,8 @@ class SparseScope(ABC):
         conditioners: Values = None,
         scale: bool = False,
         max_iter: int = 20,
-        eps: float = 1e-8,
         atol: float = 1e-8,
+        eps: float | None = None,
     ) -> None:
         pass
 
@@ -92,11 +93,11 @@ class SparseScope(ABC):
     @torch.no_grad()
     def get_masks(
         self,
-        num_nz: int,
-        grouped_block_scores: Tensor | None = None,
+        nnz: int,
+        block_scores: Tensor | None = None,
         values: Values = None,
         **kwargs,
-    ) -> Mapping[BlockSpec, Tensor]:
+    ) -> Mapping[SparseBlock, Tensor]:
         pass
 
     @abstractmethod
@@ -113,65 +114,63 @@ class SparseScope(ABC):
 
 @dataclass
 class ScopeSpec(SparseScope):
-    """Organizes groups from a SparseNode into scopes (decision units).
+    """Organizes blocks from a SparseNode into scopes (decision units).
 
-    Divides the group grid into scopes of ``shape`` groups.
+    Divides the block grid into scopes of ``shape`` blocks.
     Pruning decisions (hard/soft threshold, mask selection) operate at the
-    scope level: within each scope, groups compete to survive.
+    scope level: within each scope, blocks compete to survive.
 
     Args:
-        group: BlockSpec or BlockCoupling that defines the group grid.
+        block: SparseBlock or BlockCoupling that defines the block grid.
             Must have ``grid_shape`` divisible by ``shape``.
-        shape: Number of groups per scope in each dimension.
+        shape: Number of blocks of scope in each dimension.
             Use -1 to span the entire dimension.
         name: Optional name for identification.
     """
 
-    group: BlockSpec | BlockCoupling
+    block: SparseBlock
     shape: Tuple[int, ...]
     name: Optional[str] = None
 
     def __post_init__(self):
         if not self.shape:
-            self.shape = tuple(-1 for _ in self.group.grid_shape)
+            self.shape = tuple(-1 for _ in self.block.grid_shape)
 
         # Pad with -1 for missing trailing dimensions
-        if len(self.shape) < len(self.group.grid_shape):
+        if len(self.shape) < len(self.block.grid_shape):
             self.shape = self.shape + tuple(
-                -1 for _ in range(len(self.group.grid_shape) - len(self.shape))
+                -1 for _ in range(len(self.block.grid_shape) - len(self.shape))
             )
 
-        if len(self.shape) != len(self.group.grid_shape):
+        if len(self.shape) != len(self.block.grid_shape):
             raise ValueError(
                 f"scope shape {self.shape} has len {len(self.shape)} "
-                f"but grid_shape = {self.group.grid_shape}D"
+                f"but grid_shape = {self.block.grid_shape}D"
             )
         self.shape = tuple(
             [
-                self.group.grid_shape[i] if gi == -1 else gi
+                self.block.grid_shape[i] if gi == -1 else gi
                 for i, gi in enumerate(self.shape)
             ]
         )
 
-        for i, (block_idx, gi) in enumerate(
-            zip(self.group.grid_shape, self.shape)
-        ):
+        for i, (block_idx, gi) in enumerate(zip(self.block.grid_shape, self.shape)):
             if block_idx % gi != 0:
                 raise ValueError(
                     f"dim {i}: block_grid[{i}]={block_idx} "
                     f"not divisible by "
-                    f"group_size[{i}]={gi}"
+                    f"block_size[{i}]={gi}"
                 )
 
     # ── Properties ────────────────────────────────────────────────────
 
     @property
-    def data(self) -> Mapping[BlockSpec, Tensor]:
-        """Dict mapping each BlockSpec to its tensor data."""
-        data = self.group.data
+    def data(self) -> Mapping[SparseBlock, Tensor]:
+        """Dict mapping each SparseBlock to its tensor data."""
+        data = self.block.data
         if isinstance(data, Tensor):
-            assert isinstance(self.group, BlockSpec)
-            return {self.group: data}
+            assert isinstance(self.block, SparseBlock)
+            return {self.block: data}
         else:
             return data
 
@@ -179,47 +178,44 @@ class ScopeSpec(SparseScope):
     def grid_shape(self) -> Tuple[int, ...]:
         """Full grid shape including singleton dimensions."""
         return tuple(
-            block_idx // gi
-            for block_idx, gi in zip(self.group.grid_shape, self.shape)
+            block_idx // gi for block_idx, gi in zip(self.block.grid_shape, self.shape)
         )
 
     @cached_property
-    def numel(self) -> int:
+    def scope_numel(self) -> int:
         """Total number of elements across all scopes."""
         return math.prod(self.grid_shape)
 
     @property
     def block_numel(self) -> int:
-        """Number of groups per scope."""
+        """Number of blocks per scope."""
         return math.prod(self.shape)
 
     # ── Methods ──────────────────────────────────────────────────────
 
-    def specs(self) -> Iterable[BlockSpec]:
-        g = self.group
-        return list(g.specs()) if isinstance(g, BlockSpec) else list(g.specs)
+    def specs(self) -> Iterable[SparseBlock]:
+        g = self.block
+        return list(g.specs()) if isinstance(g, SparseBlock) else list(g.specs)
 
     def nnz(self, eps=1e-8) -> int:
-        return self.group.nnz(eps=eps)
+        return self.block.nnz(eps=eps)
 
     def block_to_scope(
         self, b: Tensor, reorder: bool = True, merge: bool = False
     ) -> Tensor:
-        """Reshape a group-grid tensor into scope layout.
+        """Reshape a block-grid tensor into scope layout.
 
         Args:
             b: Tensor with shape ``(B1, B2, ..., Bm, ...)``.
-            reorder: If True, permute so scope dims precede group dims.
-            merge: If True, collapse group dims into a single trailing dim.
+            reorder: If True, permute so scope dims precede block dims.
+            merge: If True, collapse block dims into a single trailing dim.
 
         Returns:
             Tensor with shape ``(G1, G2, ..., g1, g2, ..., ...)`` (or merged).
         """
-        assert b.shape[: len(self.group.grid_shape)] == self.group.grid_shape
+        assert b.shape[: len(self.block.grid_shape)] == self.block.grid_shape
         inter_shape = [
-            grid_idx
-            for pair in zip(self.grid_shape, self.shape)
-            for grid_idx in pair
+            grid_idx for pair in zip(self.grid_shape, self.shape) for grid_idx in pair
         ]
         view = b.view(*inter_shape)
         if reorder or merge:
@@ -229,7 +225,7 @@ class ScopeSpec(SparseScope):
         return view
 
     def scope_to_block(self, block_values: Tensor) -> Tensor:
-        """Broadcast scope-level values back to the group grid.
+        """Broadcast scope-level values back to the block grid.
 
         Args:
             block_values: Tensor with shape ``(G1, ..., Gm)``.
@@ -242,11 +238,11 @@ class ScopeSpec(SparseScope):
         for i, gi in enumerate(self.shape):  # type: ignore
             inter_values = inter_values.unsqueeze(2 * i + 1)
             inter_values = inter_values.repeat_interleave(gi, dim=2 * i + 1)
-        inter_values = inter_values.view(self.group.grid_shape)
+        inter_values = inter_values.view(self.block.grid_shape)
         return inter_values
 
     def block_norms(self, values: Values) -> Tensor:
-        """Compute group L2 norms arranged in scope layout.
+        """Compute block L2 norms arranged in scope layout.
 
         Args:
             values: Element values to compute norms from (None uses param data).
@@ -254,109 +250,99 @@ class ScopeSpec(SparseScope):
         Returns:
             Tensor with shape ``(*grid_shape, block_numel)``.
         """
-        block_norms = self.group.norms(values)
+        block_norms = self.block.norms(values)
         block_norms = self.block_to_scope(block_norms, reorder=False)
         merged = merge_odd_dims(block_norms)
         return merged
 
-    def kth_largest(
-        self,
-        element_values: Mapping[BlockSpec, Tensor] | None,
-        num_nz: int,
-    ) -> Tensor:
+    def kth_largest(self, element_values: Values, nnz: int) -> Tensor:
         """
         Calculates the k-th largest score across all blocks from all specs.
         This is used to determine the threshold for pruning.
         """
-        grouped_block_scores = self.block_norms(element_values)
-        top_scores = kth_largest(grouped_block_scores, k=num_nz, dim=-1)
+        block_scores = self.block_norms(element_values)
+        top_scores = kth_largest(block_scores, k=nnz, dim=-1)
         top_scores = top_scores.view(self.grid_shape)
         return top_scores
 
     @torch.no_grad()
     def hard_threshold(
         self,
+        values: Values,
+        nnz: Optional[int] = None,
         thresholds: Optional[Tensor] = None,
-        num_nz: Optional[int] = None,
-        values: Optional[Values] = None,
-        sparsity: Optional[float] = None,
+        # sparsity: Optional[float] = None,
     ):
-        """Zero out groups in-place based on thresholds.
+        """Zero out blocks in-place based on thresholds.
 
-        Exactly one of ``thresholds``, ``num_nz``, or
+        Exactly one of ``thresholds``, ``nnz``, or
         ``sparsity`` must be given.
 
         Args:
             thresholds: Per-block thresholds, shape
                 ``grid_shape``.
-            num_nz: Number of groups to keep per block.
+            nnz: Number of blocks to keep per scope.
             values: Element values for computing norms.
             sparsity: Fraction to prune (0.5 = 50%).
         """
         if thresholds is None:
-            if num_nz is None:
-                if sparsity is None:
-                    raise ValueError(
-                        "Either block_thresholds "
-                        "or kappa or sparsity "
-                        "should be provided"
-                    )
-                else:
-                    num_nz = self.block_numel - int(sparsity * self.block_numel)
+            if nnz is None:
+                raise ValueError("One of{thresholds, nnz} should be provided")
 
-            if num_nz == self.block_numel:
+            if nnz == self.block_numel:
                 return
 
-            thresholds = self.kth_largest(None, num_nz=num_nz)
+            thresholds = self.kth_largest(values, nnz=nnz)
 
         assert thresholds.shape == self.grid_shape
 
         block_thresholds = self.scope_to_block(thresholds)
-        self.group.hard_threshold(block_thresholds)
+        self.block.hard_threshold(block_thresholds, values=values)
+
+    def sparsity_to_nnz(self, sparsity):
+        return max(self.block_numel - int(sparsity * self.block_numel), 0)
 
     @torch.no_grad()
     def get_masks(
         self,
-        num_nz: int,
-        grouped_block_scores: Tensor | None = None,
+        nnz: int,
         values: Values = None,
-        grouped_mask: Tensor | None = None,
+        block_scores: Tensor | None = None,
+        block_mask: Tensor | None = None,
         **kwargs,
-    ) -> Mapping[BlockSpec, Tensor]:
+    ) -> Mapping[SparseBlock, Tensor]:
         """Compute element-level boolean masks from scope-level scores.
 
         Args:
-            num_nz: Number of groups to keep per scope.
-            grouped_block_scores: Pre-computed scores with shape
+            nnz: Number of blocks to keep per scope.
+            block_scores: Pre-computed scores with shape
                 ``(*grid_shape, block_numel)``.
             values: Element values for computing
-                group norms (if scores not given).
-            grouped_mask: Pre-computed boolean mask to use directly.
+                block norms (if scores not given).
+            block_mask: Pre-computed boolean mask to use directly.
 
         Returns:
-            Dict mapping each BlockSpec to its element-level boolean mask.
+            Dict mapping each SparseBlock to its element-level boolean mask.
         """
-        if grouped_mask is None:
-            if grouped_block_scores is None:
-                grouped_block_scores = self.block_norms(values)
+        if block_mask is None:
+            if block_scores is None:
+                block_scores = self.block_norms(values)
             else:
-                assert grouped_block_scores.shape == self.grid_shape + (
-                    self.block_numel,
-                )
+                assert block_scores.shape == self.grid_shape + (self.block_numel,)
 
-            indices = torch.topk(grouped_block_scores, k=num_nz, dim=-1)[1]
+            indices = torch.topk(block_scores, k=nnz, dim=-1)[1]
 
-            grouped_mask = torch.zeros_like(grouped_block_scores).bool()
-            grouped_mask.scatter_(-1, indices, True)
+            block_mask = torch.zeros_like(block_scores).bool()
+            block_mask.scatter_(-1, indices, True)
 
         block_mask = unmerge_odd_dims(
-            grouped_mask.view(self.grid_shape + (self.block_numel,)),
+            block_mask.view(self.grid_shape + (self.block_numel,)),
             self.shape,
         )
 
-        block_mask = block_mask.view(self.group.grid_shape)
+        block_mask = block_mask.view(self.block.grid_shape)
 
-        return self.group.get_masks(block_mask)
+        return self.block.get_masks(block_mask)
 
     @torch.no_grad()
     def soft_threshold(
@@ -365,15 +351,15 @@ class ScopeSpec(SparseScope):
         conditioners: Values = None,
         scale: bool = False,
         max_iter: int = 20,
-        eps: float = 1e-8,
         atol: float = 1e-8,
+        eps: float | None = None,
     ) -> None:
-        """Apply soft thresholding (L1 proximal operator) to groups in-place.
+        """Apply soft thresholding (L1 proximal operator) to scopes in-place.
 
         Args:
             thresholds: Per-scope threshold values
                 with shape ``grid_shape``.
-            conditioners: Diagonal preconditioner per BlockSpec.
+            conditioners: Diagonal preconditioner per SparseBlock.
             scale: If True, scale thresholds by sqrt(block_numel).
             max_iter: Maximum bisection iterations for Adam variant.
             eps: Small constant for numerical stability.
@@ -381,16 +367,17 @@ class ScopeSpec(SparseScope):
         """
         assert tuple(thresholds.shape) == self.grid_shape
 
-        block_lambdas = self.scope_to_block(thresholds)
+        eps = get_dtype_epsilon(thresholds.dtype, eps)
+        block_thresholds = self.scope_to_block(thresholds)
         if scale:
-            block_lambdas = block_lambdas * (self.group.numel() ** 0.5)
+            block_thresholds = block_thresholds * (self.block.block_numel**0.5)
 
-        self.group.soft_threshold(
-            block_lambdas,
+        self.block.soft_threshold(
+            block_thresholds,
             conditioners=conditioners,
             max_iter=max_iter,
-            eps=eps,
             atol=atol,
+            eps=eps,
         )
 
     def apply_mask(self, mask: Tensor) -> None:
@@ -401,14 +388,14 @@ class ScopeSpec(SparseScope):
             f"{self.__class__.__name__}[block_shape={self.shape}, "
             f"grid_shape={self.grid_shape}, "
             f"name={self.name}], "
-            f"group={self.group}"
+            f"block={self.block}"
         )
 
     def __str__(self) -> str:
         return repr(self)
 
     def __hash__(self) -> int:
-        return hash((hash(self.group), self.shape))
+        return hash((hash(self.block), self.shape))
 
 
 @dataclass
@@ -417,8 +404,7 @@ class ScopeCoupling(SparseScope):
 
     Aligns scope grids from different parameters via dimension permutations
     (``orders``) so they share a common grid shape.
-    Within each aligned scope, groups from all
-    specs compete to survive during pruning.
+    Within each aligned scope, blocks from all specs compete to survive pruning.
 
     Args:
         scopes: List of ScopeSpec instances to couple.
@@ -436,9 +422,7 @@ class ScopeCoupling(SparseScope):
 
     def __post_init__(self):
         if not self.orders:
-            self.orders = [
-                tuple(range(len(g.grid_shape))) for g in self.scopes
-            ]
+            self.orders = [tuple(range(len(g.grid_shape))) for g in self.scopes]
         if len(self.orders) != len(self.scopes):
             raise ValueError("orders must match number of specs.")
 
@@ -457,10 +441,10 @@ class ScopeCoupling(SparseScope):
         for g, o in zip(self.scopes, self.orders):
             gperm = tuple(g.grid_shape[i] for i in o)
             if gperm != ref_permute:
+                s_name = g.name or "<unnamed"
                 raise CouplingError(
-                    "Incompatible grouped shapes "
-                    f"after order: {gperm} vs {ref_permute} "
-                    f"(spec {g.name or '<unnamed>'})"
+                    "Incompatible scope shapes "
+                    f"after order: {gperm} vs {ref_permute} (spec {s_name})"
                 )
             self._reverse_orders.append(inverse_permutation(o))
 
@@ -468,18 +452,18 @@ class ScopeCoupling(SparseScope):
 
     @property
     def num_blocks(self) -> int:
-        """Total number of groups across all coupled scopes."""
+        """Total number of blocks across all coupled scopes."""
         return sum([s.block_numel for s in self.scopes])
 
     @property
     def params(self) -> Set[View]:
         """Expose underlying views for optimizer integration."""
-        return {p for g in self.scopes for p in g.group.parameters()}
+        return {p for g in self.scopes for p in g.block.parameters()}
 
     @property
-    def data(self) -> Mapping[BlockSpec, Tensor]:
-        """Merged dict mapping each BlockSpec to its tensor data."""
-        merged: Dict[BlockSpec, Tensor] = {}
+    def data(self) -> Mapping[SparseBlock, Tensor]:
+        """Merged dict mapping each SparseBlock to its tensor data."""
+        merged: Dict[SparseBlock, Tensor] = {}
         for g in self.scopes:
             merged.update(g.data)
         return merged
@@ -491,16 +475,17 @@ class ScopeCoupling(SparseScope):
 
     @property
     def block_numel(self) -> int:
-        """Total groups per scope across all coupled scopes."""
+        """Total blocks per scope across all coupled scopes."""
         return sum(g.block_numel for g in self.scopes)
 
     # ── Methods ──────────────────────────────────────────────────────
 
-    def specs(self) -> Iterable[BlockSpec]:
+    def specs(self) -> Iterable[SparseBlock]:
         return [s for g in self.scopes for s in g.specs()]
 
-    def numel(self) -> int:
-        return sum([g.group.numel() for g in self.scopes])
+    @cached_property
+    def scope_numel(self) -> int:
+        return sum([g.block.block_numel for g in self.scopes])
 
     def nnz(self, eps=1e-8) -> int:
         return sum(g.nnz(eps=eps) for g in self.scopes)
@@ -525,19 +510,19 @@ class ScopeCoupling(SparseScope):
         Calculates the k-th largest score across all blocks from all specs.
         This is used to determine the threshold for pruning.
         """
-        grouped_scores = self.block_norms(values)
+        blocked_scores = self.block_norms(values)
 
-        return kth_largest(grouped_scores, k=k, dim=-1)
+        return kth_largest(blocked_scores, k=k, dim=-1)
 
     @torch.no_grad()
     def hard_threshold(
         self,
         thresholds: Optional[Tensor] = None,
-        num_nz: Optional[int] = None,
+        nnz: Optional[int] = None,
         values: Values = None,
         sparsity: Optional[float] = None,
     ):
-        """Compute kappa-largest group norm among coupled
+        """Compute kappa-largest block norm among coupled
         scopes from all specs then sends the threshold
         to specs to hard-threshold in-place.
         Note that the threshold is across coupled scopes,
@@ -546,7 +531,7 @@ class ScopeCoupling(SparseScope):
         """
 
         if thresholds is None:
-            if num_nz is None:
+            if nnz is None:
                 if sparsity is None:
                     raise ValueError(
                         "Either block_thresholds "
@@ -554,18 +539,16 @@ class ScopeCoupling(SparseScope):
                         "should be provided"
                     )
                 else:
-                    num_nz = self.block_numel - int(sparsity * self.block_numel)
+                    nnz = self.block_numel - int(sparsity * self.block_numel)
 
-            if num_nz == self.block_numel:
+            if nnz == self.block_numel:
                 return
 
-            thresholds = self.kth_largest(k=num_nz, values=values)
+            thresholds = self.kth_largest(k=nnz, values=values)
 
         assert thresholds.shape == self.grid_shape
         for ro, g in zip(self._reverse_orders, self.scopes):
-            g.hard_threshold(
-                thresholds=thresholds.permute(ro).reshape(g.grid_shape)
-            )
+            g.hard_threshold(thresholds=thresholds.permute(ro).reshape(g.grid_shape))
 
     @torch.no_grad()
     def soft_threshold(
@@ -574,8 +557,8 @@ class ScopeCoupling(SparseScope):
         conditioners: Values = None,
         scale: bool = False,
         max_iter: int = 20,
-        eps: float = 1e-8,
         atol: float = 1e-8,
+        eps: float | None = None,
     ) -> None:
         """Performs soft thresholding on all coupled parameters."""
         assert thresholds.shape == self.grid_shape
@@ -586,39 +569,34 @@ class ScopeCoupling(SparseScope):
                 conditioners=conditioners,
                 scale=scale,
                 max_iter=max_iter,
+                atol=atol,
                 eps=eps,
             )
 
     @torch.no_grad()
     def get_masks(
         self,
-        num_nz: int,
-        grouped_block_scores: Tensor | None = None,
+        nnz: int,
+        block_scores: Tensor | None = None,
         values: Values = None,
         **kwargs,
-    ) -> Mapping[BlockSpec, Tensor]:
-        if grouped_block_scores is None:
-            grouped_block_scores = self.block_norms(values)
+    ) -> Mapping[SparseBlock, Tensor]:
+        if block_scores is None:
+            block_scores = self.block_norms(values)
         else:
-            assert grouped_block_scores.shape == self.grid_shape + (
-                self.block_numel,
-            )
+            assert block_scores.shape == self.grid_shape + (self.block_numel,)
 
-        indices = torch.topk(grouped_block_scores, k=num_nz, dim=-1)[1]
+        indices = torch.topk(block_scores, k=nnz, dim=-1)[1]
 
-        grouped_mask = torch.zeros_like(grouped_block_scores).bool()
-        grouped_mask.scatter_(-1, indices, True)
+        block_mask = torch.zeros_like(block_scores).bool()
+        block_mask.scatter_(-1, indices, True)
 
         spec_masks = {}
         slice_start = 0
         for ro, g in zip(self._reverse_orders, self.scopes):
-            block_slice = grouped_mask[
-                ..., slice_start : slice_start + g.block_numel
-            ]
+            block_slice = block_mask[..., slice_start : slice_start + g.block_numel]
             spec_masks.update(
-                g.get_masks(
-                    num_nz=0, grouped_mask=block_slice.permute(ro + (len(ro),))
-                )
+                g.get_masks(nnz=0, block_mask=block_slice.permute(ro + (len(ro),)))
             )
             slice_start += g.block_numel
 

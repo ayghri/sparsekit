@@ -15,7 +15,7 @@ from sparsekit.block import BlockSpec, BlockCoupling
 from sparsekit.scope import ScopeSpec, ScopeCoupling
 
 
-# Fill colors for groups (pastel) — cycle if more groups than entries
+# Fill colors for blocks (pastel) — cycle if more blocks than entries
 _COLORS = [
     "#AED6F1",
     "#A9DFBF",
@@ -39,8 +39,8 @@ _COLORS = [
     "#A2D9CE",
 ]
 
-# Outline colors for blocks (high-contrast, saturated) — cycle if needed
-_GROUP_COLORS = [
+# Outline colors for scopes (high-contrast, saturated) — cycle if needed
+_SCOPE_COLORS = [
     "#C0392B",
     "#1A5276",
     "#1E8449",
@@ -78,29 +78,29 @@ def _merge_intervals(
     return merged
 
 
-def _draw_group_outlines(
+def _draw_scope_outlines(
     ax: plt.Axes,
-    gm: np.ndarray,
+    sm: np.ndarray,
     num_rows: int,
     _num_cols: int,  # pylint: disable=invalid-name
     block_offset: int,
 ) -> None:
-    """Draw one inset perimeter per contiguous block region.
+    """Draw one inset perimeter per contiguous scope region.
 
-    For each block, boundary edges are merged into
+    For each scope, boundary edges are merged into
     maximal collinear segments, then each segment is
     shifted inward by _INSET so outlines from adjacent
-    blocks never overlap. Segment endpoints are also
+    scopes never overlap. Segment endpoints are also
     trimmed by _INSET so perpendicular segments meet
     cleanly at corners.
     """
     e = _INSET
-    unique_gids = sorted(int(g) for g in np.unique(gm) if g >= 0)
-    ngc = len(_GROUP_COLORS)
+    unique_sids = sorted(int(s) for s in np.unique(sm) if s >= 0)
+    ngc = len(_SCOPE_COLORS)
 
-    for gid in unique_gids:
-        color = _GROUP_COLORS[(gid + block_offset) % ngc]
-        cells = set(zip(*np.where(gm == gid)))
+    for sid in unique_sids:
+        color = _SCOPE_COLORS[(sid + block_offset) % ngc]
+        cells = set(zip(*np.where(sm == sid)))
 
         # Accumulate raw perimeter edges, keyed by their axis-position:
         #   top/bottom edges  → dict[y_abs] = [(x_start, x_end), ...]
@@ -182,11 +182,11 @@ def _build_maps(
     block_spec: BlockSpec,
     scope_spec: Optional[ScopeSpec] = None,
 ) -> Tuple[np.ndarray, np.ndarray, Tuple[int, int]]:
-    """Build (M, num_cols) integer maps of group_id and
-    partition_id for one parameter.
+    """Build (M, num_cols) integer maps of block_id and
+    scope_id for one parameter.
 
     Returns:
-        group_map: (M, num_cols) int32 array; -1 for
+        block_map: (M, num_cols) int32 array; -1 for
             elements not covered by the view.
         scope_map: (M, num_cols) int32 array; -1 if
             no scope_spec or not covered.
@@ -221,43 +221,43 @@ def _build_maps(
     param_rows = (linear_offset // num_cols).numpy()
     param_cols = (linear_offset % num_cols).numpy()
 
-    # Group flat index
+    # Block flat index
     bg_strides = _c_strides(grid_shape)
-    group_ids = torch.zeros(
+    block_ids = torch.zeros(
         view.shape, dtype=torch.long
     )
     for g, b, s in zip(grids, block_shape, bg_strides):
-        group_ids.add_((g.long() // b) * s)
+        block_ids.add_((g.long() // b) * s)
 
-    group_map = np.full(
+    block_map = np.full(
         (M, num_cols), -1, dtype=np.int32
     )
-    group_map[param_rows, param_cols] = (
-        group_ids.numpy()
+    block_map[param_rows, param_cols] = (
+        block_ids.numpy()
     )
 
     scope_map = np.full(
         (M, num_cols), -1, dtype=np.int32
     )
     if scope_spec is not None:
-        gg_strides = _c_strides(
+        ss_strides = _c_strides(
             scope_spec.grid_shape
         )
-        part_ids = torch.zeros(
+        scope_ids = torch.zeros(
             view.shape, dtype=torch.long
         )
         for g, b, gs, s in zip(
             grids,
             block_shape,
             scope_spec.shape,
-            gg_strides,
+            ss_strides,
         ):
-            part_ids.add_((g.long() // (b * gs)) * s)
+            scope_ids.add_((g.long() // (b * gs)) * s)
         scope_map[param_rows, param_cols] = (
-            part_ids.numpy()
+            scope_ids.numpy()
         )
 
-    return group_map, scope_map, (M, num_cols)
+    return block_map, scope_map, (M, num_cols)
 
 
 def _draw_param(
@@ -270,32 +270,32 @@ def _draw_param(
     block_offset: int = 0,
     label: Optional[str] = None,
 ):
-    """Render one parameter's group/partition layout on *ax*.
+    """Render one parameter's block/scope layout on *ax*.
 
     Args:
         block_spec: BlockSpec for this parameter.
-        scope_spec: Optional ScopeSpec for partition outlines.
+        scope_spec: Optional ScopeSpec for scope outlines.
         ax: Axes to draw on.
         max_rows: Maximum number of param rows to display.
         max_cols: Maximum number of param cols to display.
         color_offset: Shift into _COLORS so coupled
             params use different colors.
-        block_offset: Shift into _GROUP_COLORS so
-            partition colors stay consistent.
+        block_offset: Shift into _SCOPE_COLORS so
+            scope colors stay consistent.
         label: Optional subtitle drawn below the axes.
     """
-    gm_map, pm_map, (M, num_cols) = _build_maps(
+    bm_map, sm_map, (M, num_cols) = _build_maps(
         block_spec, scope_spec
     )
 
     num_rows = min(M, max_rows)
     C = min(num_cols, max_cols)
-    bm = gm_map[:num_rows, :C]
-    gm = pm_map[:num_rows, :C]
+    bm = bm_map[:num_rows, :C]
+    sm = sm_map[:num_rows, :C]
 
     nc = len(_COLORS)
 
-    # ── Cell fill (color = group identity) ────────
+    # ── Cell fill (color = block identity) ────────
     for row in range(num_rows):
         for col in range(C):
             bid = int(bm[row, col])
@@ -326,10 +326,10 @@ def _draw_param(
             c, color="#cccccc", linewidth=0.4, zorder=2
         )
 
-    # ── Block outlines ───────────────────────────
+    # ── Scope outlines ───────────────────────────
     if scope_spec is not None:
-        _draw_group_outlines(
-            ax, gm, num_rows, C, block_offset
+        _draw_scope_outlines(
+            ax, sm, num_rows, C, block_offset
         )
 
     # Outer border
@@ -399,25 +399,25 @@ def draw_layout(
     ] = []
 
     if isinstance(spec, ScopeSpec):
-        group = spec.group
-        if isinstance(group, BlockSpec):
-            triples.append((group, spec, group.name))
-        elif isinstance(group, BlockCoupling):
-            for s in group.specs:
+        block = spec.block
+        if isinstance(block, BlockSpec):
+            triples.append((block, spec, block.name))
+        elif isinstance(block, BlockCoupling):
+            for s in block.specs:
                 triples.append((s, None, s.name or "param"))
         else:
-            raise TypeError(f"Unsupported group type: {type(group)}")
+            raise TypeError(f"Unsupported block type: {type(block)}")
 
     elif isinstance(spec, BlockSpec):
         triples.append((spec, None, spec.name or "param"))
 
     elif isinstance(spec, ScopeCoupling):
-        for g in spec.scopes:
-            group = g.group
-            if isinstance(group, BlockSpec):
-                triples.append((group, g, group.name))
-            elif isinstance(group, BlockCoupling):
-                for s in group.specs:
+        for sc in spec.scopes:
+            block = sc.block
+            if isinstance(block, BlockSpec):
+                triples.append((block, sc, block.name))
+            elif isinstance(block, BlockCoupling):
+                for s in block.specs:
                     triples.append((s, None, s.name or "param"))
 
     elif isinstance(spec, BlockCoupling):

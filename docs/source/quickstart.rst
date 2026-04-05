@@ -6,7 +6,7 @@ Installation
 
 Or from source:
 
-.. code-group:: bash
+.. code-block:: bash
 
    cd sparsekit && pip install .
 
@@ -16,7 +16,7 @@ Basic 2:4 Pruning
 Keep 2 of every 4 contiguous columns (50 % sparse, hardware-friendly on
 NVIDIA Ampere+):
 
-.. code-group:: python
+.. code-block:: python
 
    import torch
    from sparsekit import BlockSpec, ScopeSpec, StructuredOBS
@@ -25,14 +25,14 @@ NVIDIA Ampere+):
    X = torch.randn(4096, 1024, device="cuda")
 
    # 1. Build hierarchy
-   group = BlockSpec(W, shape=(1, 1))              # scalar groups
-   scope = ScopeSpec(group, shape=(1, 4))      # scopes of 4 columns
+   block = BlockSpec(W, shape=(1, 1))              # scalar blocks
+   scope = ScopeSpec(block, shape=(1, 4))      # scopes of 4 blocks
 
    # 2. Hessian and its inverse
    hessian = (X.T @ X) / X.shape[0]
    inv_h = StructuredOBS.compute_inverse(hessian, damp=1e-4)
 
-   # 3. Prune (keep 2 of 4 groups per scope)
+   # 3. Prune (keep 2 of 4 blocks per scope)
    obs = StructuredOBS(scope, hessian, inv_h=inv_h)
    obs.prune(num_nz=2, compensate="local")         # fast, within-scope
    # obs.prune(num_nz=2, compensate="interleaved", n_splits=64)  # best quality
@@ -40,31 +40,31 @@ NVIDIA Ampere+):
 Magnitude Pruning (no Hessian)
 ------------------------------
 
-.. code-group:: python
+.. code-block:: python
 
    from sparsekit import BlockSpec, ScopeSpec
 
-   group = BlockSpec(W, shape=(1, 1))
-   scope = ScopeSpec(group, shape=(1, 4))
-   scope.hard_threshold(num_nz=2)   # keeps 2 largest-norm groups per scope
+   block = BlockSpec(W, shape=(1, 1))
+   scope = ScopeSpec(block, shape=(1, 4))
+   scope.hard_threshold(num_nz=2)   # keeps 2 largest-norm blocks per scope
 
 Coupled 2:4 (Two Parameters)
 -----------------------------
 
 Prune two weight matrices jointly so their sparsity masks are coupled:
 
-.. code-group:: python
+.. code-block:: python
 
    from sparsekit import BlockSpec, BlockCoupling, ScopeSpec, ScopeCoupling
 
    U = torch.nn.Parameter(torch.randn(4, 8, 2, 2, device="cuda"))
    V = torch.nn.Parameter(torch.randn(8, 16, 2, 2, device="cuda"))
 
-   group_u = BlockSpec(U, shape=(2, 2, 2, 2), name="U")
-   group_v = BlockSpec(V, shape=(2, 2, 2, 2), name="V")
+   block_u = BlockSpec(U, shape=(2, 2, 2, 2), name="U")
+   block_v = BlockSpec(V, shape=(2, 2, 2, 2), name="V")
 
-   scope_u = ScopeSpec(group_u, shape=(1, 1), name="pU")
-   scope_v = ScopeSpec(group_v, shape=(1, 4), name="pV")
+   scope_u = ScopeSpec(block_u, shape=(1, 1), name="pU")
+   scope_v = ScopeSpec(block_v, shape=(1, 4), name="pV")
 
    coupled = ScopeCoupling(
        [scope_u, scope_v],
@@ -75,7 +75,7 @@ Prune two weight matrices jointly so their sparsity masks are coupled:
 Using the Builder API
 ---------------------
 
-.. code-group:: python
+.. code-block:: python
 
    from sparsekit.builder import SparsityBuilder
 
@@ -97,7 +97,7 @@ Sparsity Patterns
    :widths: 25 20 20 35
 
    * - Pattern
-     - group shape
+     - block shape
      - scope shape
      - Description
    * - 2:4
@@ -112,7 +112,7 @@ Sparsity Patterns
      - Via ``View``
      - ``(1, 1, 4, 1)``
      - Pair columns 8 apart in 16-col segments
-   * - Group-16 coupled
+   * - Block-16 coupled
      - ``(1, 1, 16)``
      - ``(1, 2, 1)``
-     - 16-col groups, 8-row coupling
+     - 16-col blocks, 8-row coupling

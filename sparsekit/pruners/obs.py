@@ -20,16 +20,16 @@ from ..scope import ScopeSpec
 
 
 def _block_flat_offsets(
-    group: BlockSpec,
+    block: BlockSpec,
     device: torch.device = torch.device("cpu"),
 ) -> Tensor:
-    """Compute flat storage offsets for every element of every group.
+    """Compute flat storage offsets for every element of every block.
 
     Returns:
         flat_offsets: ``(*grid_shape, block_numel)`` long tensor.
     """
-    grid_shape = group.grid_shape
-    block_shape = group.shape
+    grid_shape = block.grid_shape
+    block_shape = block.shape
     rank = len(block_shape)
 
     ranges = [torch.arange(b, device=device) for b in block_shape]
@@ -43,7 +43,7 @@ def _block_flat_offsets(
     bs = torch.tensor(block_shape, device=device)
     elem_idx = grid_pts.unsqueeze(-2) * bs + offsets
 
-    param = group.view
+    param = block.view
     if isinstance(param, View):
         return param.linear_offset(elem_idx)
     else:
@@ -54,34 +54,34 @@ def _block_flat_offsets(
 
 
 def block_col_indices(
-    group: BlockSpec,
+    block: BlockSpec,
     num_cols: int,
     device: torch.device = torch.device("cpu"),
 ) -> Tensor:
-    """Map each group to its original column indices.
+    """Map each block to its original column indices.
 
     Returns:
         col_idx: ``(*grid_shape[1:], block_numel)``
             long tensor.
     """
-    flat_offsets = _block_flat_offsets(group, device)
+    flat_offsets = _block_flat_offsets(block, device)
     col_idx_full = flat_offsets % num_cols
-    col_grid = group.grid_shape[1:]
+    col_grid = block.grid_shape[1:]
     row_slice = tuple(
         0
         for _ in range(
-            len(group.grid_shape) - len(col_grid)
+            len(block.grid_shape) - len(col_grid)
         )
     )
     return col_idx_full[row_slice]
 
 
 def block_param_rc(
-    group: BlockSpec,
+    block: BlockSpec,
     num_cols: int,
     device: torch.device = torch.device("cpu"),
 ) -> tuple[Tensor, Tensor]:
-    """Map each group to ``(param_row, param_col)``.
+    """Map each block to ``(param_row, param_col)``.
 
     Unlike :func:`block_col_indices` this returns the
     **full** grid (including the row dimension) and both
@@ -93,7 +93,7 @@ def block_param_rc(
         col_idx: ``(*grid_shape, block_numel)`` long
             tensor.
     """
-    flat_offsets = _block_flat_offsets(group, device)
+    flat_offsets = _block_flat_offsets(block, device)
     return (
         flat_offsets // num_cols,
         flat_offsets % num_cols,
@@ -104,7 +104,7 @@ class StructuredOBS:
     """Structured OBS pruner operating through ScopeSpec.
 
     Args:
-        block: ScopeSpec defining the group and block
+        scope: ScopeSpec defining the block and scope
             structure.
         hessian: (K, K) Hessian matrix.
         damp: Damping factor for hessian regularization.
@@ -114,17 +114,17 @@ class StructuredOBS:
 
     def __init__(
         self,
-        block: ScopeSpec,
+        scope: ScopeSpec,
         hessian: Tensor,
         damp: float = 1e-4,
         inv_h: Tensor | None = None,
     ):
-        self.block = block
-        group = block.group
-        assert isinstance(group, BlockSpec)
+        self.scope = scope
+        block = scope.block
+        assert isinstance(block, BlockSpec)
 
-        self.group = group
-        param = group.view
+        self.block = block
+        param = block.view
         self.hessian = hessian
         self.damp = damp
         self.num_cols = hessian.shape[0]
@@ -136,40 +136,40 @@ class StructuredOBS:
             self.W = param
 
         self.M = self.W.shape[0]
-        self.bk = group.numel()
+        self.bk = block.block_numel
 
-        grid_shape = group.grid_shape
-        block_shape = block.shape
-        block_grid = block.grid_shape
+        grid_shape = block.grid_shape
+        scope_shape = scope.shape
+        scope_grid = scope.grid_shape
 
-        self.rows_per_block_row = group.shape[0] * block_shape[0]
-        self.num_scope_rows = block_grid[0]
+        self.rows_per_scope_row = block.shape[0] * scope_shape[0]
+        self.num_scope_rows = scope_grid[0]
 
         col_grid = grid_shape[1:]
-        self.total_groups = math.prod(col_grid)
+        self.total_blocks = math.prod(col_grid)
         self.blocks_per_scope = (
-            math.prod(block_shape[1:]) if len(block_shape) > 1 else 1
+            math.prod(scope_shape[1:]) if len(scope_shape) > 1 else 1
         )
         self.num_scopes_per_row = (
-            math.prod(block_grid[1:]) if len(block_grid) > 1 else 1
+            math.prod(scope_grid[1:]) if len(scope_grid) > 1 else 1
         )
 
-        # Column index mapping: (total_groups, bk)
-        col_idx_full = block_col_indices(group, self.num_cols, device=device)
-        self.col_idx = col_idx_full.reshape(self.total_groups, self.bk)
+        # Block column indices: (total_blocks, bk)
+        col_idx_full = block_col_indices(block, self.num_cols, device=device)
+        self.col_idx = col_idx_full.reshape(self.total_blocks, self.bk)
         if self.bk == 1:
             self.col_idx_flat = self.col_idx.squeeze(-1)
 
         # Block mapping
         self.block_to_scope, _ = self._build_block_mapping(
-            col_grid, block_shape[1:], block_grid[1:], device
+            col_grid, scope_shape[1:], scope_grid[1:], device
         )
 
-        # Row coupling detection: do groups within the same block span
-        # different param rows?  (e.g. group-16 with 8-row coupling)
-        row_full, _ = block_param_rc(group, self.num_cols, device=device)
+        # Row coupling detection: do blocks within the same scope span
+        # different param rows?  (e.g. block-16 with 8-row coupling)
+        row_full, _ = block_param_rc(block, self.num_cols, device=device)
         row_slice = tuple(0 for _ in range(len(grid_shape) - len(col_grid)))
-        row_cg = row_full[row_slice].reshape(self.total_groups, self.bk)
+        row_cg = row_full[row_slice].reshape(self.total_blocks, self.bk)
 
         sort_perm = torch.argsort(self.block_to_scope)
         gs = self.blocks_per_scope
@@ -232,8 +232,8 @@ class StructuredOBS:
     def _build_block_mapping(
         col_grid, block_shape_rest, block_grid_rest, device
     ):
-        """Build mapping from group index to block index."""
-        total_groups = math.prod(col_grid)
+        """Build mapping from block index to scope index."""
+        total_blocks = math.prod(col_grid)
         if len(col_grid) == 0:
             return (
                 torch.zeros(1, dtype=torch.long, device=device),
@@ -243,7 +243,7 @@ class StructuredOBS:
         ranges = [torch.arange(g, device=device) for g in col_grid]
         bc_grid = torch.stack(
             torch.meshgrid(*ranges, indexing="ij"), dim=-1
-        ).reshape(total_groups, -1)
+        ).reshape(total_blocks, -1)
 
         gs_rest = list(block_shape_rest)
         gg_rest = list(block_grid_rest)
@@ -300,13 +300,13 @@ class StructuredOBS:
             inv_h = self.inv_hessian
         num_prune = prune_subsets.shape[1]
         n_subsets = prune_subsets.shape[0]
-        elem_per_group = gs * bk if bk > 1 else gs
+        elem_per_block = gs * bk if bk > 1 else gs
         num_parts = block_cols.shape[0]
 
         if bk == 1:
-            group_start = block_cols[:, 0]
+            block_start = block_cols[:, 0]
         else:
-            group_start = block_cols[:, 0, 0]
+            block_start = block_cols[:, 0, 0]
 
         best_si_full = torch.zeros(
             M, num_parts, dtype=torch.long, device=device
@@ -315,8 +315,8 @@ class StructuredOBS:
         for b_start in range(0, num_cols, block_size):
             b_end = min(b_start + block_size, num_cols)
             in_block = (
-                (group_start >= b_start)
-                & (group_start < b_end)
+                (block_start >= b_start)
+                & (block_start < b_end)
             )
             gidx = torch.where(in_block)[0]
             num_batch_parts = gidx.shape[0]
@@ -329,7 +329,7 @@ class StructuredOBS:
             else:
                 cols = block_cols[gidx]
                 flat = cols.view(
-                    num_batch_parts, elem_per_group
+                    num_batch_parts, elem_per_block
                 ).view(-1)
 
             if bk == 1:
@@ -339,14 +339,14 @@ class StructuredOBS:
                 ]
             else:
                 fc = cols.view(
-                    num_batch_parts, elem_per_group
+                    num_batch_parts, elem_per_block
                 )
                 inv_sub = inv_h[
                     fc.unsqueeze(-1), fc.unsqueeze(-2)
                 ]
 
-            weight_group = W[:, flat].view(
-                M, num_batch_parts, elem_per_group
+            weight_block = W[:, flat].view(
+                M, num_batch_parts, elem_per_block
             )
 
             eye_np = 1e-8 * torch.eye(
@@ -372,7 +372,7 @@ class StructuredOBS:
                     inv_pruned + eye_np
                 )
 
-                weight_pruned = weight_group[:, :, fp]
+                weight_pruned = weight_block[:, :, fp]
                 temp = torch.einsum(
                     "mgp,gpq->mgq",
                     weight_pruned,
@@ -405,18 +405,18 @@ class StructuredOBS:
         inv_h = self.inv_hessian
         num_prune = prune_subsets.shape[1]
         n_subsets = prune_subsets.shape[0]
-        elem_per_group = gs * bk if bk > 1 else gs
+        elem_per_block = gs * bk if bk > 1 else gs
 
         if bk == 1:
-            group_start = block_cols[:, 0]
+            block_start = block_cols[:, 0]
         else:
-            group_start = block_cols[:, 0, 0]
+            block_start = block_cols[:, 0, 0]
 
         for b_start in range(0, num_cols, block_size):
             b_end = min(b_start + block_size, num_cols)
             in_block = (
-                (group_start >= b_start)
-                & (group_start < b_end)
+                (block_start >= b_start)
+                & (block_start < b_end)
             )
             gidx = torch.where(in_block)[0]
             num_batch_parts = gidx.shape[0]
@@ -429,7 +429,7 @@ class StructuredOBS:
             else:
                 cols = block_cols[gidx]
                 flat = cols.view(
-                    num_batch_parts, elem_per_group
+                    num_batch_parts, elem_per_block
                 ).view(-1)
 
             if bk == 1:
@@ -439,16 +439,16 @@ class StructuredOBS:
                 ]
             else:
                 fc = cols.view(
-                    num_batch_parts, elem_per_group
+                    num_batch_parts, elem_per_block
                 )
                 inv_sub = inv_h[
                     fc.unsqueeze(-1), fc.unsqueeze(-2)
                 ]
 
-            weight_group = W[:, flat].view(
-                M, num_batch_parts, elem_per_group
+            weight_block = W[:, flat].view(
+                M, num_batch_parts, elem_per_block
             )
-            weight_group_new = weight_group.clone()
+            weight_block_new = weight_block.clone()
             eye_np = 1e-8 * torch.eye(
                 num_prune * bk, device=device
             )
@@ -489,7 +489,7 @@ class StructuredOBS:
                 )
 
                 weight_pruned = (
-                    weight_group[:, :, fp]
+                    weight_block[:, :, fp]
                 )
                 delta_k = torch.einsum(
                     "mgp,gnp->mgn",
@@ -497,12 +497,12 @@ class StructuredOBS:
                     comp,
                 )
                 mask_exp = mask.unsqueeze(-1)
-                weight_group_new[:, :, fk] -= (
+                weight_block_new[:, :, fk] -= (
                     delta_k * mask_exp
                 )
-                weight_group_new[
+                weight_block_new[
                     :, :, fp
-                ] = weight_group_new[
+                ] = weight_block_new[
                     :, :, fp
                 ].masked_fill(
                     mask_exp, 0.0
@@ -511,8 +511,8 @@ class StructuredOBS:
             W.scatter_(
                 1,
                 flat.unsqueeze(0).expand(M, -1),
-                weight_group_new.reshape(
-                    M, num_batch_parts * elem_per_group
+                weight_block_new.reshape(
+                    M, num_batch_parts * elem_per_block
                 ),
             )
 
@@ -1099,7 +1099,7 @@ class StructuredOBS:
 
     # ── True OBS (per-row C with Schur updates) ──────────────────────
 
-    def _prescore_groups_order(
+    def _prescore_blocks_order(
         self,
         W,
         col_map,
@@ -1127,17 +1127,17 @@ class StructuredOBS:
 
         for g in range(num_parts):
             cols = col_map[g]
-            inv_group = inv_h[cols][:, cols]
-            weight_group = W[:, cols]
+            inv_block = inv_h[cols][:, cols]
+            weight_block = W[:, cols]
             best_cost = torch.full(
                 (M,), float("inf"), device=device
             )
             for si in range(n_subs):
                 co = sub_to_cols[si]
                 inv_pruned_inv = torch.inverse(
-                    inv_group[co][:, co] + eye_np
+                    inv_block[co][:, co] + eye_np
                 )
-                weight_pruned = weight_group[:, co]
+                weight_pruned = weight_block[:, co]
                 cost = (
                     weight_pruned
                     @ inv_pruned_inv
@@ -1151,7 +1151,7 @@ class StructuredOBS:
 
     # ── Row-coupled True OBS ─────────────────────────────────────────
 
-    def _prescore_coupled_groups(
+    def _prescore_coupled_blocks(
         self,
         weight_chunk,
         local_row_map,
@@ -1274,7 +1274,7 @@ class StructuredOBS:
             for vr_local in range(n_vr):
                 row_cg = self.full_row_idx[
                     vr0 + vr_local
-                ].reshape(self.total_groups, bk)
+                ].reshape(self.total_blocks, bk)
                 chunk_row_map[vr_local] = (
                     row_cg[gsp].view(
                         num_parts, gs, bk
@@ -1322,7 +1322,7 @@ class StructuredOBS:
                         "Pre-scoring blocks..."
                     )
                 block_order = (
-                    self._prescore_coupled_groups(
+                    self._prescore_coupled_blocks(
                         weight_chunk,
                         local_row_map,
                         n_vr,
@@ -1531,7 +1531,7 @@ class StructuredOBS:
                 .view(M, num_cols)
             )
             block_order = (
-                self._prescore_groups_order(
+                self._prescore_blocks_order(
                     weight_flat,
                     col_map,
                     prune_subsets,
