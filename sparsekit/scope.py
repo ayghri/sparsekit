@@ -23,6 +23,7 @@ from .tensor_ops import normalize_order
 from .tensor_ops import unmerge_odd_dims
 from .tensor_ops import inverse_permutation
 from .tensor_ops import kth_largest
+from .tensor_ops import mid_kth_largest
 from .tensor_ops import get_dtype_epsilon
 from .block import Values
 from .block import CouplingError
@@ -69,7 +70,6 @@ class SparseScope(ABC):
         thresholds: Optional[Tensor] = None,
         nnz: Optional[int] = None,
         values: Values = None,
-        sparsity: Optional[float] = None,
     ):
         """
         Zeros out blocks in-place based on scope-level thresholds.
@@ -265,12 +265,23 @@ class ScopeSpec(SparseScope):
         top_scores = top_scores.view(self.grid_shape)
         return top_scores
 
+    def kth_mid(self, element_values: Values, nnz: int, k_weight=1.0) -> Tensor:
+        """
+        Calculates the k-th largest score across all blocks from all specs.
+        This is used to determine the threshold for pruning.
+        """
+        block_scores = self.block_norms(element_values)
+        # top_scores = kth_largest(block_scores, k=nnz, dim=-1)
+        top_scores = mid_kth_largest(block_scores, k=nnz, dim=-1, k_weight=k_weight)
+        top_scores = top_scores.view(self.grid_shape)
+        return top_scores
+
     @torch.no_grad()
     def hard_threshold(
         self,
-        values: Values,
-        nnz: Optional[int] = None,
         thresholds: Optional[Tensor] = None,
+        nnz: Optional[int] = None,
+        values: Values = None,
         # sparsity: Optional[float] = None,
     ):
         """Zero out blocks in-place based on thresholds.
@@ -299,7 +310,7 @@ class ScopeSpec(SparseScope):
         block_thresholds = self.scope_to_block(thresholds)
         self.block.hard_threshold(block_thresholds, values=values)
 
-    def sparsity_to_nnz(self, sparsity):
+    def sparsity_to_nnz(self, sparsity: float):
         return max(self.block_numel - int(sparsity * self.block_numel), 0)
 
     @torch.no_grad()
@@ -330,10 +341,11 @@ class ScopeSpec(SparseScope):
             else:
                 assert block_scores.shape == self.grid_shape + (self.block_numel,)
 
-            indices = torch.topk(block_scores, k=nnz, dim=-1)[1]
-
-            block_mask = torch.zeros_like(block_scores).bool()
-            block_mask.scatter_(-1, indices, True)
+            thresholds = kth_largest(block_scores, k=nnz, dim=-1).unsqueeze(-1)
+            # indices = torch.topk(block_scores, k=nnz, dim=-1)[1]
+            # block_mask = torch.zeros_like(block_scores).bool()
+            # block_mask.scatter_(-1, indices, True)
+            block_mask = block_scores >= thresholds
 
         block_mask = unmerge_odd_dims(
             block_mask.view(self.grid_shape + (self.block_numel,)),

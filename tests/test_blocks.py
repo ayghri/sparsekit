@@ -41,7 +41,10 @@ class TestSoftThresholdAdam:
         conditioners = torch.ones_like(spec_2x2.data)
         thresholds = torch.tensor([0.5]).reshape(spec_2x2.grid_shape)
 
-        spec_2x2._soft_threshold_diag_cond(thresholds, conditioners)
+        spec_2x2._soft_threshold_diag_cond(thresholds, conditioners,
+                                           max_iter=20,
+                                           atol=1e-8,
+                                           eps=1e-8)
 
         expected = torch.full((2, 2), 0.75)
         assert torch.allclose(spec_2x2.data, expected)
@@ -73,7 +76,10 @@ class TestSoftThresholdAdam:
         conditioners = torch.full_like(spec_2x2.data, 2.0)
         thresholds = torch.tensor([1.0]).reshape(spec_2x2.grid_shape)
 
-        spec_2x2._soft_threshold_diag_cond(thresholds, conditioners)
+        spec_2x2._soft_threshold_diag_cond(thresholds, conditioners,
+                                           max_iter=20,
+                                           atol=1e-8,
+                                           eps=1e-8)
 
         expected = torch.full((2, 2), 0.75)
         assert torch.allclose(spec_2x2.data, expected)
@@ -88,8 +94,10 @@ class TestSoftThresholdAdam:
         conditioners = torch.ones_like(spec_2x2.data)
         thresholds = torch.tensor([3.0]).reshape(spec_2x2.grid_shape)
 
-        spec_2x2._soft_threshold_diag_cond(thresholds, conditioners)
-
+        spec_2x2._soft_threshold_diag_cond(thresholds, conditioners,
+                                           max_iter=20,
+                                           atol=1e-8,
+                                           eps=1e-8)
         assert torch.allclose(spec_2x2.data, torch.zeros(2, 2))
 
     def test_adam_cutoff_behavior(self, spec_2x2):
@@ -104,7 +112,10 @@ class TestSoftThresholdAdam:
         spec_survive = BlockSpec(Parameter(torch.ones(2, 2)), shape=(2, 2))
         cond = torch.ones_like(spec_survive.data)
         thresh_survive = torch.tensor([0.9]).reshape(spec_survive.grid_shape)
-        spec_survive._soft_threshold_diag_cond(thresh_survive, cond)
+        spec_survive._soft_threshold_diag_cond(thresh_survive, cond,
+                                           max_iter=20,
+                                           atol=1e-8,
+                                           eps=1e-8)
         assert not torch.allclose(spec_survive.data, torch.zeros(2, 2))
         # norm=2, threshold=0.9, H=1: mu/(1+mu)*2=0.9 → mu=0.9/1.1 → scale=1.1/2=0.55
         mu = 0.9 / 1.1
@@ -116,7 +127,10 @@ class TestSoftThresholdAdam:
         # Case 2: Zero out
         spec_die = BlockSpec(Parameter(torch.ones(2, 2)), shape=(2, 2))
         thresh_die = torch.tensor([3.0]).reshape(spec_die.grid_shape)
-        spec_die._soft_threshold_diag_cond(thresh_die, cond)
+        spec_die._soft_threshold_diag_cond(thresh_die, cond,
+                                           max_iter=20,
+                                           atol=1e-8,
+                                           eps=1e-8)
         assert torch.allclose(spec_die.data, torch.zeros(2, 2))
 
     def test_adam_shapes_mismatch(self, spec_2x2):
@@ -125,7 +139,10 @@ class TestSoftThresholdAdam:
         thresholds = torch.zeros(spec_2x2.grid_shape)
 
         with pytest.raises(ShapeMismatchError):
-            spec_2x2._soft_threshold_diag_cond(thresholds, conditioners)
+            spec_2x2._soft_threshold_diag_cond(thresholds, conditioners,
+                                           max_iter=20,
+                                           atol=1e-8,
+                                           eps=1e-8)
 
     def test_adam_multi_block_mixed(self):
         """
@@ -143,7 +160,10 @@ class TestSoftThresholdAdam:
         # Bottom-Right: 3.0 (Norm=2, denom=-1 -> Die)
         thresholds = torch.tensor([[0.5, 3.0], [3.0, 3.0]])
 
-        spec._soft_threshold_diag_cond(thresholds, H)
+        spec._soft_threshold_diag_cond(thresholds, H,
+                                           max_iter=20,
+                                           atol=1e-8,
+                                           eps=1e-8)
 
         # Top-Left should be non-zero (specifically 0.75 as calculated before)
         assert torch.allclose(spec.data[0:2, 0:2], torch.full((2, 2), 0.75))
@@ -168,7 +188,10 @@ class TestSoftThresholdAdam:
         mu = 1.1691705341
         expected = v * h / (h + mu)
 
-        spec._soft_threshold_diag_cond(thresholds, h, max_iter=20)
+        spec._soft_threshold_diag_cond(thresholds, h,
+                                           max_iter=20,
+                                           atol=1e-8,
+                                           eps=1e-8)
 
         assert torch.allclose(spec.data, expected)
 
@@ -182,7 +205,9 @@ class TestSoftThresholdAdam:
         mu = 1.6383774184
         expected = v * h / (h + mu)
 
-        spec._soft_threshold_diag_cond(thresholds, h, max_iter=20)
+        spec._soft_threshold_diag_cond(thresholds, h, max_iter=20,
+                                           atol=1e-8,
+                                           eps=1e-8)
 
         assert torch.allclose(spec.data, expected)
 
@@ -195,7 +220,10 @@ class TestSoftThresholdAdam:
 
         expected = torch.zeros_like(v)
 
-        spec._soft_threshold_diag_cond(thresholds, h, max_iter=20)
+        spec._soft_threshold_diag_cond(thresholds, h,
+                                           max_iter=20,
+                                           atol=1e-8,
+                                           eps=1e-8)
 
         assert torch.allclose(spec.data, expected)
 
@@ -224,7 +252,10 @@ class TestSoftThresholdAdam:
                 torch.zeros((2, 2)),
             ]
         )
-        spec._soft_threshold_diag_cond(thresholds, h, max_iter=50)
+        spec._soft_threshold_diag_cond(thresholds, h,
+                                       max_iter=20,
+                                           atol=1e-8,
+                                           eps=1e-8)
 
         assert torch.allclose(spec.data, expected)
 

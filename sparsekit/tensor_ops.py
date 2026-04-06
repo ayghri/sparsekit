@@ -155,6 +155,7 @@ def mid_kth_largest(
     x: Tensor,
     k: int,
     dim: int | None = None,
+    k_weight: float = 1.0,
     **kwargs,
 ) -> Tensor:
     """Midpoint of k-th and (k+1)-th largest values.
@@ -163,5 +164,7 @@ def mid_kth_largest(
     based on (K, k). Flattens first when ``dim is None``.
     """
     if dim is None:
-        return _mid_kth_largest_impl(x.reshape(-1), k, dim=0, **kwargs).squeeze()
-    return _mid_kth_largest_impl(x, k, dim=dim, **kwargs)
+        return _mid_kth_largest_impl(
+            x.reshape(-1), k, dim=0, k_weight=k_weight, **kwargs
+        ).squeeze()
+    return _mid_kth_largest_impl(x, k, dim=dim, k_weight=k_weight, **kwargs)

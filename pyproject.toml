@@ -5,6 +5,9 @@ description = "Sparsity Kit for Structured Sparsity Specification"
 authors = ["Ayoub Ghriss research@ayghri.me"]
 readme = "README.md"
 packages = [{ include = "sparsekit" }]
+license-files = ["LICENSE"]
+license = "CC BY-NC 4.0"
+
 
 [tool.poetry.dependencies]
 python = ">=3.11,<3.14"
@@ -22,6 +25,3 @@ build-backend = "poetry.core.masonry.api"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
-license = { text = "CC BY-NC 4.0" }
-license-files = ["LICENSE"]

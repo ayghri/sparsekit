@@ -55,15 +55,11 @@ class TestScopeSpecViews:
         group_vals = torch.ones(g.grid_shape)
         blocks_back = g.scope_to_block(group_vals)
         assert tuple(blocks_back.shape) == tuple(simple_block_spec.grid_shape)
-        assert torch.allclose(
-            blocks_back, torch.ones(simple_block_spec.grid_shape)
-        )
+        assert torch.allclose(blocks_back, torch.ones(simple_block_spec.grid_shape))
 
 
 class TestScopeSpecHardThreshold:
-    def test_hard_threshold_with_explicit_block_thresholds(
-        self, simple_block_spec
-    ):
+    def test_hard_threshold_with_explicit_block_thresholds(self, simple_block_spec):
         g = ScopeSpec(simple_block_spec, shape=())
         # two 2x2 groups, make first big, second small
         simple_block_spec.set_data(
@@ -92,7 +88,9 @@ class TestScopeSpecHardThreshold:
         data[2:4, 2:4] = 0.1
         simple_block_spec.set_data(data)
         # sparsity=0.5 -> keep half the blocks => one block; the small one should go
-        g.hard_threshold(sparsity=0.5)
+
+        nnz = g.sparsity_to_nnz(0.5)
+        g.hard_threshold(nnz=nnz)
 
         # One group should remain non-zero, one should be all zeros
         block_norms = simple_block_spec.norms(None)
@@ -101,19 +99,13 @@ class TestScopeSpecHardThreshold:
 
         # Verify WHICH blocks survived: large-norm blocks win their scopes
         # Scope (col 0): blocks (0,0)=norm 20 vs (1,0)=norm 0 → (0,0) survives
-        assert (
-            block_norms[0, 0] > 0
-        ), "Large block [0:2,0:2] (norm=20) should survive"
-        assert (
-            block_norms[1, 0] == 0
-        ), "Zero block [2:4,0:2] (norm=0) should be pruned"
+        assert block_norms[0, 0] > 0, "Large block [0:2,0:2] (norm=20) should survive"
+        assert block_norms[1, 0] == 0, "Zero block [2:4,0:2] (norm=0) should be pruned"
         # Scope (col 1): blocks (0,1)=norm 0 vs (1,1)=norm 0.2 → (1,1) survives
         assert (
             block_norms[1, 1] > 0
         ), "Small block [2:4,2:4] (norm=0.2) should survive (largest in scope)"
-        assert (
-            block_norms[0, 1] == 0
-        ), "Zero block [0:2,2:4] (norm=0) should be pruned"
+        assert block_norms[0, 1] == 0, "Zero block [0:2,2:4] (norm=0) should be pruned"
 
 
 class TestScopeSpecSoftThreshold:
@@ -175,9 +167,7 @@ class TestScopeSpecSoftThreshold:
             [
                 torch.ones(2, 2),
                 torch.tensor([[0.25, 0.5], [1.0, 2.0]]),
-                torch.tensor(
-                    [[0.49671415, 0.1382643], [0.64768854, 1.52302986]]
-                ),
+                torch.tensor([[0.49671415, 0.1382643], [0.64768854, 1.52302986]]),
                 torch.tensor([[0.5, 0.5], [0.5, 0.5]]),
             ]
         )
@@ -222,9 +212,7 @@ class TestScopeCoupling:
     def coupling(self, scope_uv):
         scope_u, scope_v = scope_uv
         # Full-rank orders over 4D grid_shape: swap first two dims, keep singletons
-        return ScopeCoupling(
-            [scope_u, scope_v], orders=[(0, 1, 2, 3), (1, 0, 2, 3)]
-        )
+        return ScopeCoupling([scope_u, scope_v], orders=[(0, 1, 2, 3), (1, 0, 2, 3)])
 
     def test_init_valid(self, scope_uv):
         scope_u, scope_v = scope_uv
@@ -256,9 +244,7 @@ class TestScopeCoupling:
         # Last dim is concatenated over blocks; others should match grid_shape
         assert norms.shape[:-1] == coupling.grid_shape
         # There should be as many channels in the last dimension as total blocks
-        total_blocks = sum(
-            g.block_norms(None).shape[-1] for g in coupling.scopes
-        )
+        total_blocks = sum(g.block_norms(None).shape[-1] for g in coupling.scopes)
         assert norms.shape[-1] == total_blocks
 
     def test_kth_largest_shape(self, coupling):
@@ -284,17 +270,11 @@ class TestScopeCoupling:
     def test_soft_threshold_reduces_param_norm(self, coupling):
         # Use simple conditioners (all ones) and a modest threshold
         block_thresholds = torch.full(coupling.grid_shape, 0.1)
-        conditioners = {
-            g.block: torch.ones_like(g.block.data) for g in coupling.scopes
-        }
+        conditioners = {g.block: torch.ones_like(g.block.data) for g in coupling.scopes}
 
-        before = [
-            torch.linalg.vector_norm(g.block.data) for g in coupling.scopes
-        ]
+        before = [torch.linalg.vector_norm(g.block.data) for g in coupling.scopes]
         coupling.soft_threshold(block_thresholds, conditioners=conditioners)
-        after = [
-            torch.linalg.vector_norm(g.block.data) for g in coupling.scopes
-        ]
+        after = [torch.linalg.vector_norm(g.block.data) for g in coupling.scopes]
 
         # Each parameter norm should not increase
         for b, a in zip(before, after):
@@ -304,9 +284,7 @@ class TestScopeCoupling:
 
     def test_soft_threshold_does_not_increase_block_norms(self, coupling):
         block_thresholds = torch.full(coupling.grid_shape, 0.1)
-        conditioners = {
-            g.block: torch.ones_like(g.block.data) for g in coupling.scopes
-        }
+        conditioners = {g.block: torch.ones_like(g.block.data) for g in coupling.scopes}
 
         before = [g.block.norms(None).clone() for g in coupling.scopes]
         coupling.soft_threshold(block_thresholds, conditioners=conditioners)

@@ -17,6 +17,7 @@ from torch import Tensor
 
 from .tensor_ops import interleave_unsqueeze
 from .tensor_ops import inverse_permutation, normalize_order
+from .tensor_ops import get_dtype_epsilon
 from .view import View
 
 
@@ -169,10 +170,10 @@ class SparseBlock(ABC):
     def soft_threshold(
         self,
         block_thresholds: Tensor,
-        conditioners: Values,
-        max_iter: int,
-        atol: float,
-        eps: float,
+        conditioners: Values = None,
+        max_iter: int = 20,
+        atol: float = 1e-8,
+        eps: float | None = None,
     ) -> None:
         """Apply soft thresholding to shrink block norms.
 
@@ -184,6 +185,7 @@ class SparseBlock(ABC):
             atol: Absolute tolerance for convergence.
         """
         assert tuple(block_thresholds.shape) == self.grid_shape
+        eps = get_dtype_epsilon(block_thresholds.dtype, eps)
 
         if conditioners is None:
             self._soft_threshold_euclid(block_thresholds, eps=eps)
