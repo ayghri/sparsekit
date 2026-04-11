@@ -14,7 +14,6 @@ from typing import Optional, List, Tuple, Union
 from sparsekit.block import BlockSpec, BlockCoupling
 from sparsekit.scope import ScopeSpec, ScopeCoupling
 
-
 # Fill colors for blocks (pastel) — cycle if more blocks than entries
 _COLORS = [
     "#AED6F1",
@@ -212,9 +211,7 @@ def _build_maps(
     )
 
     # Linear offset into param storage
-    linear_offset = torch.zeros(
-        view.shape, dtype=torch.long
-    )
+    linear_offset = torch.zeros(view.shape, dtype=torch.long)
     for g, d in zip(grids, view.stride):
         linear_offset.add_(g.long() * d)
 
@@ -223,29 +220,17 @@ def _build_maps(
 
     # Block flat index
     bg_strides = _c_strides(grid_shape)
-    block_ids = torch.zeros(
-        view.shape, dtype=torch.long
-    )
+    block_ids = torch.zeros(view.shape, dtype=torch.long)
     for g, b, s in zip(grids, block_shape, bg_strides):
         block_ids.add_((g.long() // b) * s)
 
-    block_map = np.full(
-        (M, num_cols), -1, dtype=np.int32
-    )
-    block_map[param_rows, param_cols] = (
-        block_ids.numpy()
-    )
+    block_map = np.full((M, num_cols), -1, dtype=np.int32)
+    block_map[param_rows, param_cols] = block_ids.numpy()
 
-    scope_map = np.full(
-        (M, num_cols), -1, dtype=np.int32
-    )
+    scope_map = np.full((M, num_cols), -1, dtype=np.int32)
     if scope_spec is not None:
-        ss_strides = _c_strides(
-            scope_spec.grid_shape
-        )
-        scope_ids = torch.zeros(
-            view.shape, dtype=torch.long
-        )
+        ss_strides = _c_strides(scope_spec.grid_shape)
+        scope_ids = torch.zeros(view.shape, dtype=torch.long)
         for g, b, gs, s in zip(
             grids,
             block_shape,
@@ -253,9 +238,7 @@ def _build_maps(
             ss_strides,
         ):
             scope_ids.add_((g.long() // (b * gs)) * s)
-        scope_map[param_rows, param_cols] = (
-            scope_ids.numpy()
-        )
+        scope_map[param_rows, param_cols] = scope_ids.numpy()
 
     return block_map, scope_map, (M, num_cols)
 
@@ -284,9 +267,7 @@ def _draw_param(
             scope colors stay consistent.
         label: Optional subtitle drawn below the axes.
     """
-    bm_map, sm_map, (M, num_cols) = _build_maps(
-        block_spec, scope_spec
-    )
+    bm_map, sm_map, (M, num_cols) = _build_maps(block_spec, scope_spec)
 
     num_rows = min(M, max_rows)
     C = min(num_cols, max_cols)
@@ -301,9 +282,7 @@ def _draw_param(
             bid = int(bm[row, col])
             y = num_rows - row - 1
             facecolor = (
-                _COLORS[(bid + color_offset) % nc]
-                if bid >= 0
-                else "white"
+                _COLORS[(bid + color_offset) % nc] if bid >= 0 else "white"
             )
             ax.add_patch(
                 mpatches.Rectangle(
@@ -318,19 +297,13 @@ def _draw_param(
 
     # ── Thin cell-level grid ─────────────────────
     for r in range(num_rows + 1):
-        ax.axhline(
-            r, color="#cccccc", linewidth=0.4, zorder=2
-        )
+        ax.axhline(r, color="#cccccc", linewidth=0.4, zorder=2)
     for c in range(C + 1):
-        ax.axvline(
-            c, color="#cccccc", linewidth=0.4, zorder=2
-        )
+        ax.axvline(c, color="#cccccc", linewidth=0.4, zorder=2)
 
     # ── Scope outlines ───────────────────────────
     if scope_spec is not None:
-        _draw_scope_outlines(
-            ax, sm, num_rows, C, block_offset
-        )
+        _draw_scope_outlines(ax, sm, num_rows, C, block_offset)
 
     # Outer border
     for spine in ax.spines.values():
@@ -433,15 +406,19 @@ def draw_layout(
 
     # Figure size based on display cells
     num_rows = min(
-        triples[0][0].view.param.shape[0]
-        if triples[0][0].view.param.ndim >= 1
-        else max_rows,
+        (
+            triples[0][0].view.param.shape[0]
+            if triples[0][0].view.param.ndim >= 1
+            else max_rows
+        ),
         max_rows,
     )
     C = min(
-        triples[0][0].view.param.shape[-1]
-        if triples[0][0].view.param.ndim >= 1
-        else max_cols,
+        (
+            triples[0][0].view.param.shape[-1]
+            if triples[0][0].view.param.ndim >= 1
+            else max_cols
+        ),
         max_cols,
     )
     w = max(C * cell_size + 0.1, 1.0)

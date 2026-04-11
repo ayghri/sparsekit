@@ -67,12 +67,7 @@ def block_col_indices(
     flat_offsets = _block_flat_offsets(block, device)
     col_idx_full = flat_offsets % num_cols
     col_grid = block.grid_shape[1:]
-    row_slice = tuple(
-        0
-        for _ in range(
-            len(block.grid_shape) - len(col_grid)
-        )
-    )
+    row_slice = tuple(0 for _ in range(len(block.grid_shape) - len(col_grid)))
     return col_idx_full[row_slice]
 
 
@@ -174,36 +169,26 @@ class StructuredOBS:
         sort_perm = torch.argsort(self.block_to_scope)
         gs = self.blocks_per_scope
         num_parts = self.num_scopes_per_row
-        sorted_row_base = row_cg[sort_perm].view(
-            num_parts, gs, self.bk
-        )
+        sorted_row_base = row_cg[sort_perm].view(num_parts, gs, self.bk)
         block_rows = sorted_row_base[:, :, 0]
         self.row_coupled = bool(
-            (
-                block_rows.max(1).values
-                - block_rows.min(1).values
-                > 0
-            ).any()
+            (block_rows.max(1).values - block_rows.min(1).values > 0).any()
         )
 
         if self.row_coupled:
             self.block_sort_perm = sort_perm
             self.full_row_idx = row_full
-            self.block_col_map = self.col_idx[
-                sort_perm
-            ].view(num_parts, gs, self.bk)
+            self.block_col_map = self.col_idx[sort_perm].view(
+                num_parts, gs, self.bk
+            )
 
         if inv_h is not None:
             self.inv_hessian = inv_h
         else:
-            self.inv_hessian = self.compute_inverse(
-                hessian, damp
-            )
+            self.inv_hessian = self.compute_inverse(hessian, damp)
 
     @staticmethod
-    def compute_inverse(
-        hessian: Tensor, damp: float = 1e-4
-    ) -> Tensor:
+    def compute_inverse(hessian: Tensor, damp: float = 1e-4) -> Tensor:
         """Compute damped inverse of the Hessian matrix.
 
         Args:
@@ -219,9 +204,7 @@ class StructuredOBS:
         num_cols = hessian.shape[0]
         device = hessian.device
         damp_val = (
-            damp * torch.mean(torch.diag(hessian))
-            if damp < 1.0
-            else damp
+            damp * torch.mean(torch.diag(hessian)) if damp < 1.0 else damp
         )
         hessian_reg = hessian.clone()
         diag_idx = torch.arange(num_cols, device=device)
@@ -314,10 +297,7 @@ class StructuredOBS:
 
         for b_start in range(0, num_cols, block_size):
             b_end = min(b_start + block_size, num_cols)
-            in_block = (
-                (block_start >= b_start)
-                & (block_start < b_end)
-            )
+            in_block = (block_start >= b_start) & (block_start < b_end)
             gidx = torch.where(in_block)[0]
             num_batch_parts = gidx.shape[0]
             if num_batch_parts == 0:
@@ -328,9 +308,7 @@ class StructuredOBS:
                 flat = cols.view(-1)
             else:
                 cols = block_cols[gidx]
-                flat = cols.view(
-                    num_batch_parts, elem_per_block
-                ).view(-1)
+                flat = cols.view(num_batch_parts, elem_per_block).view(-1)
 
             if bk == 1:
                 inv_sub = inv_h[
@@ -338,22 +316,16 @@ class StructuredOBS:
                     cols.unsqueeze(-2),
                 ]
             else:
-                fc = cols.view(
-                    num_batch_parts, elem_per_block
-                )
-                inv_sub = inv_h[
-                    fc.unsqueeze(-1), fc.unsqueeze(-2)
-                ]
+                fc = cols.view(num_batch_parts, elem_per_block)
+                inv_sub = inv_h[fc.unsqueeze(-1), fc.unsqueeze(-2)]
 
-            weight_block = W[:, flat].view(
-                M, num_batch_parts, elem_per_block
-            )
+            weight_block = W[:, flat].view(M, num_batch_parts, elem_per_block)
 
-            eye_np = 1e-8 * torch.eye(
-                num_prune * bk, device=device
-            )
+            eye_np = 1e-8 * torch.eye(num_prune * bk, device=device)
             all_costs = torch.empty(
-                n_subsets, M, num_batch_parts,
+                n_subsets,
+                M,
+                num_batch_parts,
                 device=device,
             )
 
@@ -378,13 +350,9 @@ class StructuredOBS:
                     weight_pruned,
                     inv_pruned_inv,
                 )
-                all_costs[si] = (
-                    (temp * weight_pruned).sum(dim=2)
-                )
+                all_costs[si] = (temp * weight_pruned).sum(dim=2)
 
-            best_si_full[:, gidx] = all_costs.argmin(
-                dim=0
-            )
+            best_si_full[:, gidx] = all_costs.argmin(dim=0)
 
         return best_si_full
 
@@ -414,10 +382,7 @@ class StructuredOBS:
 
         for b_start in range(0, num_cols, block_size):
             b_end = min(b_start + block_size, num_cols)
-            in_block = (
-                (block_start >= b_start)
-                & (block_start < b_end)
-            )
+            in_block = (block_start >= b_start) & (block_start < b_end)
             gidx = torch.where(in_block)[0]
             num_batch_parts = gidx.shape[0]
             if num_batch_parts == 0:
@@ -428,9 +393,7 @@ class StructuredOBS:
                 flat = cols.view(-1)
             else:
                 cols = block_cols[gidx]
-                flat = cols.view(
-                    num_batch_parts, elem_per_block
-                ).view(-1)
+                flat = cols.view(num_batch_parts, elem_per_block).view(-1)
 
             if bk == 1:
                 inv_sub = inv_h[
@@ -438,20 +401,12 @@ class StructuredOBS:
                     cols.unsqueeze(-2),
                 ]
             else:
-                fc = cols.view(
-                    num_batch_parts, elem_per_block
-                )
-                inv_sub = inv_h[
-                    fc.unsqueeze(-1), fc.unsqueeze(-2)
-                ]
+                fc = cols.view(num_batch_parts, elem_per_block)
+                inv_sub = inv_h[fc.unsqueeze(-1), fc.unsqueeze(-2)]
 
-            weight_block = W[:, flat].view(
-                M, num_batch_parts, elem_per_block
-            )
+            weight_block = W[:, flat].view(M, num_batch_parts, elem_per_block)
             weight_block_new = weight_block.clone()
-            eye_np = 1e-8 * torch.eye(
-                num_prune * bk, device=device
-            )
+            eye_np = 1e-8 * torch.eye(num_prune * bk, device=device)
             block_best_si = best_si[:, gidx]
 
             for si in range(n_subsets):
@@ -462,15 +417,11 @@ class StructuredOBS:
                 else:
                     fp = (
                         pidx.unsqueeze(-1) * bk
-                        + torch.arange(
-                            bk, device=device
-                        )
+                        + torch.arange(bk, device=device)
                     ).view(-1)
                     fk = (
                         kidx.unsqueeze(-1) * bk
-                        + torch.arange(
-                            bk, device=device
-                        )
+                        + torch.arange(bk, device=device)
                     ).view(-1)
 
                 mask = block_best_si == si
@@ -481,44 +432,28 @@ class StructuredOBS:
                 inv_pruned_inv = LA.inv(  # pylint: disable=not-callable
                     inv_pruned + eye_np
                 )
-                inv_keep_prune = (
-                    inv_sub[:, fk][:, :, fp]
-                )
-                comp = torch.bmm(
-                    inv_keep_prune, inv_pruned_inv
-                )
+                inv_keep_prune = inv_sub[:, fk][:, :, fp]
+                comp = torch.bmm(inv_keep_prune, inv_pruned_inv)
 
-                weight_pruned = (
-                    weight_block[:, :, fp]
-                )
+                weight_pruned = weight_block[:, :, fp]
                 delta_k = torch.einsum(
                     "mgp,gnp->mgn",
                     weight_pruned,
                     comp,
                 )
                 mask_exp = mask.unsqueeze(-1)
-                weight_block_new[:, :, fk] -= (
-                    delta_k * mask_exp
-                )
-                weight_block_new[
+                weight_block_new[:, :, fk] -= delta_k * mask_exp
+                weight_block_new[:, :, fp] = weight_block_new[
                     :, :, fp
-                ] = weight_block_new[
-                    :, :, fp
-                ].masked_fill(
-                    mask_exp, 0.0
-                )
+                ].masked_fill(mask_exp, 0.0)
 
             W.scatter_(
                 1,
                 flat.unsqueeze(0).expand(M, -1),
-                weight_block_new.reshape(
-                    M, num_batch_parts * elem_per_block
-                ),
+                weight_block_new.reshape(M, num_batch_parts * elem_per_block),
             )
 
-    def _compensate_full(
-        self, W, block_cols, prune_subsets, best_si
-    ):
+    def _compensate_full(self, W, block_cols, prune_subsets, best_si):
         """Sequential full-column compensation.
 
         Uses inv_hessian. For each block, compensate ALL K
@@ -544,29 +479,21 @@ class StructuredOBS:
         # Pruned column indices per (block, subset):
         # (num_parts, n_subsets, np*bk)
         if bk == 1:
-            pruned_cols = block_cols[
-                :, prune_subsets
-            ]
+            pruned_cols = block_cols[:, prune_subsets]
         else:
-            pruned_blk = block_cols[
-                :, prune_subsets
-            ]
-            pruned_cols = pruned_blk.view(
-                num_parts, n_subsets, np_bk
-            )
+            pruned_blk = block_cols[:, prune_subsets]
+            pruned_cols = pruned_blk.view(num_parts, n_subsets, np_bk)
 
         inv_pruned = inv_h[
             pruned_cols[:, :, :, None],
             pruned_cols[:, :, None, :],
         ]
         eye = 1e-8 * torch.eye(np_bk, device=device)
-        inv_pruned_inv = torch.inverse(
-            inv_pruned + eye
-        )
+        inv_pruned_inv = torch.inverse(inv_pruned + eye)
 
-        inv_prune_rows = inv_h[
-            pruned_cols.reshape(-1), :
-        ].view(num_parts, n_subsets, np_bk, num_cols)
+        inv_prune_rows = inv_h[pruned_cols.reshape(-1), :].view(
+            num_parts, n_subsets, np_bk, num_cols
+        )
 
         comp_all = torch.einsum(
             "gsij,gsjk->gsik",
@@ -574,9 +501,7 @@ class StructuredOBS:
             inv_prune_rows,
         )
 
-        active = torch.ones(
-            M, num_cols, device=device, dtype=torch.bool
-        )
+        active = torch.ones(M, num_cols, device=device, dtype=torch.bool)
 
         for g in range(num_parts):
             si_per_row = best_si[:, g]
@@ -584,16 +509,10 @@ class StructuredOBS:
             comp_rows = comp_g[si_per_row]
             p_cols = pruned_cols[g, si_per_row]
 
-            comp_rows = (
-                comp_rows * active.unsqueeze(1)
-            )
+            comp_rows = comp_rows * active.unsqueeze(1)
 
-            weight_pruned = torch.gather(
-                W, 1, p_cols
-            )
-            delta = torch.bmm(
-                weight_pruned.unsqueeze(1), comp_rows
-            ).squeeze(1)
+            weight_pruned = torch.gather(W, 1, p_cols)
+            delta = torch.bmm(weight_pruned.unsqueeze(1), comp_rows).squeeze(1)
             W -= delta
 
             W.scatter_(
@@ -626,43 +545,29 @@ class StructuredOBS:
         n_subsets = prune_subsets.shape[0]
         np_bk = num_prune * bk
 
-        chunk_g = (
-            (num_parts + n_splits - 1) // n_splits
-        )
-        active_mask = torch.ones(
-            num_cols, dtype=torch.bool, device=device
-        )
+        chunk_g = (num_parts + n_splits - 1) // n_splits
+        active_mask = torch.ones(num_cols, dtype=torch.bool, device=device)
 
         for split_idx in range(n_splits):
             g_start = split_idx * chunk_g
-            g_end = min(
-                (split_idx + 1) * chunk_g, num_parts
-            )
+            g_end = min((split_idx + 1) * chunk_g, num_parts)
             if g_start >= num_parts:
                 break
             num_split_parts = g_end - g_start
 
             if split_idx == 0:
-                active_cols = torch.arange(
-                    num_cols, device=device
-                )
+                active_cols = torch.arange(num_cols, device=device)
                 n_active = num_cols
                 inv_h = self.inv_hessian
-                abs_to_local = torch.arange(
-                    num_cols, device=device
-                )
+                abs_to_local = torch.arange(num_cols, device=device)
             else:
-                active_cols = torch.where(
-                    active_mask
-                )[0]
+                active_cols = torch.where(active_mask)[0]
                 n_active = active_cols.shape[0]
                 hessian_active = self.hessian[
                     active_cols[:, None],
                     active_cols[None, :],
                 ]
-                inv_h = self.compute_inverse(
-                    hessian_active, self.damp
-                )
+                inv_h = self.compute_inverse(hessian_active, self.damp)
                 abs_to_local = torch.full(
                     (num_cols,),
                     -1,
@@ -673,17 +578,11 @@ class StructuredOBS:
                     n_active, device=device
                 )
 
-            split_block_cols = block_cols[
-                g_start:g_end
-            ]
+            split_block_cols = block_cols[g_start:g_end]
             if bk == 1:
-                pruned_abs = split_block_cols[
-                    :, prune_subsets
-                ]
+                pruned_abs = split_block_cols[:, prune_subsets]
             else:
-                pruned_abs = split_block_cols[
-                    :, prune_subsets
-                ].view(
+                pruned_abs = split_block_cols[:, prune_subsets].view(
                     num_split_parts, n_subsets, np_bk
                 )
 
@@ -693,16 +592,10 @@ class StructuredOBS:
                 pruned_local[:, :, :, None],
                 pruned_local[:, :, None, :],
             ]
-            eye = 1e-8 * torch.eye(
-                np_bk, device=device
-            )
-            inv_pruned_inv = torch.inverse(
-                inv_pruned + eye
-            )
+            eye = 1e-8 * torch.eye(np_bk, device=device)
+            inv_pruned_inv = torch.inverse(inv_pruned + eye)
 
-            inv_prune_rows = inv_h[
-                pruned_local.reshape(-1), :
-            ].view(
+            inv_prune_rows = inv_h[pruned_local.reshape(-1), :].view(
                 num_split_parts,
                 n_subsets,
                 np_bk,
@@ -724,20 +617,12 @@ class StructuredOBS:
             for g_local in range(num_split_parts):
                 g = g_start + g_local
                 si_per_row = best_si[:, g]
-                comp_rows = comp_split[g_local][
-                    si_per_row
-                ]
-                p_cols = pruned_abs[
-                    g_local, si_per_row
-                ]
+                comp_rows = comp_split[g_local][si_per_row]
+                p_cols = pruned_abs[g_local, si_per_row]
 
-                comp_rows = (
-                    comp_rows * split_active.unsqueeze(1)
-                )
+                comp_rows = comp_rows * split_active.unsqueeze(1)
 
-                weight_pruned = torch.gather(
-                    W, 1, p_cols
-                )
+                weight_pruned = torch.gather(W, 1, p_cols)
                 delta = torch.bmm(
                     weight_pruned.unsqueeze(1),
                     comp_rows,
@@ -746,12 +631,8 @@ class StructuredOBS:
                 if n_active == num_cols:
                     W -= delta
                 else:
-                    ac_exp = active_cols.unsqueeze(
-                        0
-                    ).expand(M, -1)
-                    W.scatter_add_(
-                        1, ac_exp, -delta
-                    )
+                    ac_exp = active_cols.unsqueeze(0).expand(M, -1)
+                    W.scatter_add_(1, ac_exp, -delta)
 
                 W.scatter_(
                     1,
@@ -760,15 +641,11 @@ class StructuredOBS:
                 )
 
                 p_local = abs_to_local[p_cols]
-                split_active.scatter_(
-                    1, p_local, False
-                )
+                split_active.scatter_(1, p_local, False)
 
             if split_idx < n_splits - 1:
                 if bk == 1:
-                    frozen = split_block_cols.reshape(
-                        -1
-                    )
+                    frozen = split_block_cols.reshape(-1)
                 else:
                     frozen = split_block_cols.view(-1)
                 active_mask[frozen] = False
@@ -801,43 +678,29 @@ class StructuredOBS:
         n_subsets = prune_subsets.shape[0]
         np_bk = num_prune * bk
 
-        chunk_g = (
-            (num_parts + n_splits - 1) // n_splits
-        )
-        active_mask = torch.ones(
-            num_cols, dtype=torch.bool, device=device
-        )
+        chunk_g = (num_parts + n_splits - 1) // n_splits
+        active_mask = torch.ones(num_cols, dtype=torch.bool, device=device)
 
         for split_idx in range(n_splits):
             g_start = split_idx * chunk_g
-            g_end = min(
-                (split_idx + 1) * chunk_g, num_parts
-            )
+            g_end = min((split_idx + 1) * chunk_g, num_parts)
             if g_start >= num_parts:
                 break
             num_split_parts = g_end - g_start
 
             if split_idx == 0:
-                active_cols = torch.arange(
-                    num_cols, device=device
-                )
+                active_cols = torch.arange(num_cols, device=device)
                 n_active = num_cols
                 inv_h = self.inv_hessian
-                abs_to_local = torch.arange(
-                    num_cols, device=device
-                )
+                abs_to_local = torch.arange(num_cols, device=device)
             else:
-                active_cols = torch.where(
-                    active_mask
-                )[0]
+                active_cols = torch.where(active_mask)[0]
                 n_active = active_cols.shape[0]
                 hessian_active = self.hessian[
                     active_cols[:, None],
                     active_cols[None, :],
                 ]
-                inv_h = self.compute_inverse(
-                    hessian_active, self.damp
-                )
+                inv_h = self.compute_inverse(hessian_active, self.damp)
                 abs_to_local = torch.full(
                     (num_cols,),
                     -1,
@@ -848,17 +711,11 @@ class StructuredOBS:
                     n_active, device=device
                 )
 
-            split_block_cols = block_cols[
-                g_start:g_end
-            ]
+            split_block_cols = block_cols[g_start:g_end]
             if bk == 1:
-                split_block_cols_local = (
-                    abs_to_local[split_block_cols]
-                )
+                split_block_cols_local = abs_to_local[split_block_cols]
             else:
-                split_block_cols_local = (
-                    abs_to_local[split_block_cols]
-                )
+                split_block_cols_local = abs_to_local[split_block_cols]
 
             weight_active = W[:, active_cols]
 
@@ -872,27 +729,17 @@ class StructuredOBS:
             )
 
             if bk == 1:
-                pruned_local = (
-                    split_block_cols_local[
-                        :, prune_subsets
-                    ]
-                )
-                pruned_abs = split_block_cols[
-                    :, prune_subsets
-                ]
+                pruned_local = split_block_cols_local[:, prune_subsets]
+                pruned_abs = split_block_cols[:, prune_subsets]
             else:
                 pruned_local = abs_to_local[
-                    split_block_cols[
-                        :, prune_subsets
-                    ].view(
+                    split_block_cols[:, prune_subsets].view(
                         num_split_parts,
                         n_subsets,
                         np_bk,
                     )
                 ]
-                pruned_abs = split_block_cols[
-                    :, prune_subsets
-                ].view(
+                pruned_abs = split_block_cols[:, prune_subsets].view(
                     num_split_parts,
                     n_subsets,
                     np_bk,
@@ -902,16 +749,10 @@ class StructuredOBS:
                 pruned_local[:, :, :, None],
                 pruned_local[:, :, None, :],
             ]
-            eye = 1e-8 * torch.eye(
-                np_bk, device=device
-            )
-            inv_pruned_inv = torch.inverse(
-                inv_pruned + eye
-            )
+            eye = 1e-8 * torch.eye(np_bk, device=device)
+            inv_pruned_inv = torch.inverse(inv_pruned + eye)
 
-            inv_prune_rows = inv_h[
-                pruned_local.reshape(-1), :
-            ].view(
+            inv_prune_rows = inv_h[pruned_local.reshape(-1), :].view(
                 num_split_parts,
                 n_subsets,
                 np_bk,
@@ -931,24 +772,13 @@ class StructuredOBS:
             )
 
             for g_local in range(num_split_parts):
-                si_per_row = best_si_split[
-                    :, g_local
-                ]
-                comp_rows = comp_split[g_local][
-                    si_per_row
-                ]
-                p_cols = pruned_abs[
-                    g_local, si_per_row
-                ]
+                si_per_row = best_si_split[:, g_local]
+                comp_rows = comp_split[g_local][si_per_row]
+                p_cols = pruned_abs[g_local, si_per_row]
 
-                comp_rows = (
-                    comp_rows
-                    * split_active.unsqueeze(1)
-                )
+                comp_rows = comp_rows * split_active.unsqueeze(1)
 
-                weight_pruned = torch.gather(
-                    W, 1, p_cols
-                )
+                weight_pruned = torch.gather(W, 1, p_cols)
                 delta = torch.bmm(
                     weight_pruned.unsqueeze(1),
                     comp_rows,
@@ -957,12 +787,8 @@ class StructuredOBS:
                 if n_active == num_cols:
                     W -= delta
                 else:
-                    ac_exp = active_cols.unsqueeze(
-                        0
-                    ).expand(M, -1)
-                    W.scatter_add_(
-                        1, ac_exp, -delta
-                    )
+                    ac_exp = active_cols.unsqueeze(0).expand(M, -1)
+                    W.scatter_add_(1, ac_exp, -delta)
 
                 W.scatter_(
                     1,
@@ -971,15 +797,11 @@ class StructuredOBS:
                 )
 
                 p_local = abs_to_local[p_cols]
-                split_active.scatter_(
-                    1, p_local, False
-                )
+                split_active.scatter_(1, p_local, False)
 
             if split_idx < n_splits - 1:
                 if bk == 1:
-                    frozen = split_block_cols.reshape(
-                        -1
-                    )
+                    frozen = split_block_cols.reshape(-1)
                 else:
                     frozen = split_block_cols.view(-1)
                 active_mask[frozen] = False
@@ -1024,19 +846,13 @@ class StructuredOBS:
         bk = self.bk
         num_parts = self.num_scopes_per_row
 
-        W = self.W.data.clone().float().view(
-            M, num_cols
-        )
+        W = self.W.data.clone().float().view(M, num_cols)
 
         # Block column indices
         if bk == 1:
-            block_cols = self.col_idx_flat.view(
-                num_parts, gs
-            )
+            block_cols = self.col_idx_flat.view(num_parts, gs)
         else:
-            block_cols = self.col_idx.view(
-                num_parts, gs, bk
-            )
+            block_cols = self.col_idx.view(num_parts, gs, bk)
 
         # Pruning subsets
         prune_subsets = torch.tensor(
@@ -1118,31 +934,19 @@ class StructuredOBS:
         num_parts = col_map.shape[0]
         n_subs = prune_subsets.shape[0]
         inv_h = self.inv_hessian
-        eye_np = 1e-8 * torch.eye(
-            np_cols, device=device
-        )
-        scores = torch.zeros(
-            num_parts, device=device
-        )
+        eye_np = 1e-8 * torch.eye(np_cols, device=device)
+        scores = torch.zeros(num_parts, device=device)
 
         for g in range(num_parts):
             cols = col_map[g]
             inv_block = inv_h[cols][:, cols]
             weight_block = W[:, cols]
-            best_cost = torch.full(
-                (M,), float("inf"), device=device
-            )
+            best_cost = torch.full((M,), float("inf"), device=device)
             for si in range(n_subs):
                 co = sub_to_cols[si]
-                inv_pruned_inv = torch.inverse(
-                    inv_block[co][:, co] + eye_np
-                )
+                inv_pruned_inv = torch.inverse(inv_block[co][:, co] + eye_np)
                 weight_pruned = weight_block[:, co]
-                cost = (
-                    weight_pruned
-                    @ inv_pruned_inv
-                    * weight_pruned
-                ).sum(1)
+                cost = (weight_pruned @ inv_pruned_inv * weight_pruned).sum(1)
                 better = cost < best_cost
                 best_cost[better] = cost[better]
             scores[g] = best_cost.sum()
@@ -1171,32 +975,22 @@ class StructuredOBS:
 
         cols = gcm[:, 0, :]
         num_cols = inv_h.shape[0]
-        ci = cols.unsqueeze(2).expand(
-            -1, -1, bk
-        )
-        cj = cols.unsqueeze(1).expand(
-            -1, bk, -1
-        )
+        ci = cols.unsqueeze(2).expand(-1, -1, bk)
+        cj = cols.unsqueeze(1).expand(-1, bk, -1)
         flat_idx = ci * num_cols + cj
-        inv_pruned = inv_h.reshape(-1)[
-            flat_idx.reshape(-1)
-        ].view(num_parts, bk, bk)
+        inv_pruned = inv_h.reshape(-1)[flat_idx.reshape(-1)].view(
+            num_parts, bk, bk
+        )
 
         inv_pruned_inv = torch.linalg.inv(  # pylint: disable=not-callable
             inv_pruned.float() + eye_bk
         )
 
-        block_scores = torch.empty(
-            n_vr, num_parts, gs, device=device
-        )
+        block_scores = torch.empty(n_vr, num_parts, gs, device=device)
         for b in range(gs):
             lr = local_row_map[:, :, b]
-            lr_exp = lr.unsqueeze(2).expand(
-                -1, -1, bk
-            )
-            cols_exp = cols.unsqueeze(0).expand(
-                n_vr, -1, -1
-            )
+            lr_exp = lr.unsqueeze(2).expand(-1, -1, bk)
+            cols_exp = cols.unsqueeze(0).expand(n_vr, -1, -1)
             weight_blk = weight_chunk[
                 lr_exp.reshape(-1),
                 cols_exp.reshape(-1),
@@ -1206,13 +1000,9 @@ class StructuredOBS:
                 weight_blk,
                 inv_pruned_inv,
             )
-            block_scores[:, :, b] = (
-                (temp * weight_blk).sum(2)
-            )
+            block_scores[:, :, b] = (temp * weight_blk).sum(2)
 
-        scores = (
-            block_scores.min(dim=2).values.sum(dim=0)
-        )
+        scores = block_scores.min(dim=2).values.sum(dim=0)
         return torch.argsort(scores, descending=True)
 
     @torch.no_grad()
@@ -1244,13 +1034,9 @@ class StructuredOBS:
 
         eye_bk = 1e-4 * torch.eye(bk, device=device)
 
-        W = self.W.data.clone().float().view(
-            M, num_cols
-        )
+        W = self.W.data.clone().float().view(M, num_cols)
 
-        n_chunks = (
-            (num_gr + chunk_size - 1) // chunk_size
-        )
+        n_chunks = (num_gr + chunk_size - 1) // chunk_size
 
         for ci in range(n_chunks):
             vr0 = ci * chunk_size
@@ -1259,8 +1045,7 @@ class StructuredOBS:
 
             if progress_fn:
                 progress_fn(
-                    f"chunk {ci + 1}/{n_chunks}"
-                    f" ({vr0}/{num_gr} view-rows)"
+                    f"chunk {ci + 1}/{n_chunks}" f" ({vr0}/{num_gr} view-rows)"
                 )
 
             chunk_row_map = torch.empty(
@@ -1272,20 +1057,12 @@ class StructuredOBS:
                 dtype=torch.long,
             )
             for vr_local in range(n_vr):
-                row_cg = self.full_row_idx[
-                    vr0 + vr_local
-                ].reshape(self.total_blocks, bk)
-                chunk_row_map[vr_local] = (
-                    row_cg[gsp].view(
-                        num_parts, gs, bk
-                    )
+                row_cg = self.full_row_idx[vr0 + vr_local].reshape(
+                    self.total_blocks, bk
                 )
+                chunk_row_map[vr_local] = row_cg[gsp].view(num_parts, gs, bk)
 
-            unique_rows = (
-                chunk_row_map[:, :, :, 0]
-                .reshape(-1)
-                .unique()
-            )
+            unique_rows = chunk_row_map[:, :, :, 0].reshape(-1).unique()
             b_param = unique_rows.shape[0]
             p2l = torch.full(
                 (M,),
@@ -1293,13 +1070,9 @@ class StructuredOBS:
                 device=device,
                 dtype=torch.long,
             )
-            p2l[unique_rows] = torch.arange(
-                b_param, device=device
-            )
+            p2l[unique_rows] = torch.arange(b_param, device=device)
 
-            local_row_map = p2l[
-                chunk_row_map[:, :, :, 0]
-            ]
+            local_row_map = p2l[chunk_row_map[:, :, :, 0]]
 
             weight_chunk = W[unique_rows].clone()
             inv_h = torch.empty(
@@ -1310,33 +1083,23 @@ class StructuredOBS:
                 dtype=torch.float16,
             )
             inv_h[:] = self.inv_hessian.half()
-            pruned_mask = torch.ones(
-                b_param, num_cols, device=device
-            )
+            pruned_mask = torch.ones(b_param, num_cols, device=device)
 
             inv_flat = inv_h.reshape(-1)
 
             if order == "largest_first":
                 if progress_fn:
-                    progress_fn(
-                        "Pre-scoring blocks..."
-                    )
-                block_order = (
-                    self._prescore_coupled_blocks(
-                        weight_chunk,
-                        local_row_map,
-                        n_vr,
-                        eye_bk,
-                    )
+                    progress_fn("Pre-scoring blocks...")
+                block_order = self._prescore_coupled_blocks(
+                    weight_chunk,
+                    local_row_map,
+                    n_vr,
+                    eye_bk,
                 )
             else:
-                block_order = torch.arange(
-                    num_parts, device=device
-                )
+                block_order = torch.arange(num_parts, device=device)
 
-            arange_vr = torch.arange(
-                n_vr, device=device
-            )
+            arange_vr = torch.arange(n_vr, device=device)
 
             for gi in range(num_parts):
                 g = block_order[gi]
@@ -1345,24 +1108,18 @@ class StructuredOBS:
 
                 n_score = n_vr * gs
                 sc_rows = rows_g.reshape(n_score)
-                inv_pruned = inv_h[
-                    :, cols, :
-                ][:, :, cols][sc_rows]
-                inv_pruned_inv = torch.linalg.inv(  # pylint: disable=not-callable
-                    inv_pruned.float() + eye_bk
+                inv_pruned = inv_h[:, cols, :][:, :, cols][sc_rows]
+                inv_pruned_inv = (
+                    torch.linalg.inv(  # pylint: disable=not-callable
+                        inv_pruned.float() + eye_bk
+                    )
                 )
-                weight_blk = weight_chunk[
-                    sc_rows
-                ][:, cols]
+                weight_blk = weight_chunk[sc_rows][:, cols]
                 temp = torch.bmm(
                     weight_blk.unsqueeze(1),
                     inv_pruned_inv,
                 ).squeeze(1)
-                scores = (
-                    (temp * weight_blk)
-                    .sum(1)
-                    .view(n_vr, gs)
-                )
+                scores = (temp * weight_blk).sum(1).view(n_vr, gs)
 
                 _, prune_bi = scores.topk(
                     num_prune,
@@ -1372,40 +1129,24 @@ class StructuredOBS:
 
                 for pi in range(num_prune):
                     pb = prune_bi[:, pi]
-                    flat_rows = rows_g[
-                        arange_vr, pb
-                    ]
+                    flat_rows = rows_g[arange_vr, pb]
 
                     si = arange_vr * gs + pb
                     c_inv = inv_pruned_inv[si]
 
-                    inv_col = inv_h[
-                        :, :, cols
-                    ][flat_rows]
+                    inv_col = inv_h[:, :, cols][flat_rows]
 
-                    comp = torch.bmm(
-                        inv_col.float(), c_inv
-                    )
-                    weight_pruned = (
-                        weight_chunk[flat_rows][
-                            :, cols
-                        ]
-                    )
+                    comp = torch.bmm(inv_col.float(), c_inv)
+                    weight_pruned = weight_chunk[flat_rows][:, cols]
                     delta = torch.bmm(
                         comp,
                         weight_pruned.unsqueeze(2),
                     ).squeeze(2)
 
-                    weight_chunk.index_add_(
-                        0, flat_rows, -delta
-                    )
+                    weight_chunk.index_add_(0, flat_rows, -delta)
                     weight_chunk[
-                        flat_rows.unsqueeze(1).expand(
-                            -1, bk
-                        ),
-                        cols.unsqueeze(0).expand(
-                            n_vr, -1
-                        ),
+                        flat_rows.unsqueeze(1).expand(-1, bk),
+                        cols.unsqueeze(0).expand(n_vr, -1),
                     ] = 0.0
 
                     comp_h = comp.half()
@@ -1421,12 +1162,8 @@ class StructuredOBS:
                         )
 
                     pruned_mask[
-                        flat_rows.unsqueeze(1).expand(
-                            -1, bk
-                        ),
-                        cols.unsqueeze(0).expand(
-                            n_vr, -1
-                        ),
+                        flat_rows.unsqueeze(1).expand(-1, bk),
+                        cols.unsqueeze(0).expand(n_vr, -1),
                     ] = 0.0
 
             weight_chunk *= pruned_mask
@@ -1494,13 +1231,9 @@ class StructuredOBS:
         epg = gs * bk if bk > 1 else gs
 
         if bk == 1:
-            block_cols = self.col_idx_flat.view(
-                num_parts, gs
-            )
+            block_cols = self.col_idx_flat.view(num_parts, gs)
         else:
-            block_cols = self.col_idx.view(
-                num_parts, gs, bk
-            )
+            block_cols = self.col_idx.view(num_parts, gs, bk)
         col_map = block_cols.reshape(num_parts, epg)
 
         prune_subsets = torch.tensor(
@@ -1522,34 +1255,22 @@ class StructuredOBS:
 
         if order == "largest_first":
             if progress_fn:
-                progress_fn(
-                    "Pre-scoring blocks for ordering..."
-                )
-            weight_flat = (
-                self.W.data.clone()
-                .float()
-                .view(M, num_cols)
-            )
-            block_order = (
-                self._prescore_blocks_order(
-                    weight_flat,
-                    col_map,
-                    prune_subsets,
-                    sub_to_cols,
-                    np_cols,
-                )
+                progress_fn("Pre-scoring blocks for ordering...")
+            weight_flat = self.W.data.clone().float().view(M, num_cols)
+            block_order = self._prescore_blocks_order(
+                weight_flat,
+                col_map,
+                prune_subsets,
+                sub_to_cols,
+                np_cols,
             )
             del weight_flat
             if progress_fn:
                 progress_fn("Pre-scoring done.")
         else:
-            block_order = torch.arange(
-                num_parts, device=device
-            )
+            block_order = torch.arange(num_parts, device=device)
 
-        W = self.W.data.clone().float().view(
-            M, num_cols
-        )
+        W = self.W.data.clone().float().view(M, num_cols)
 
         n_chunks = (M + chunk_size - 1) // chunk_size
         num_batches = (num_parts + ng - 1) // ng
@@ -1560,42 +1281,26 @@ class StructuredOBS:
             B = c1 - c0
 
             if progress_fn and n_chunks > 4:
-                progress_fn(
-                    f"chunk {ci + 1}/{n_chunks}"
-                    f" ({c0}/{M} rows)"
-                )
+                progress_fn(f"chunk {ci + 1}/{n_chunks}" f" ({c0}/{M} rows)")
 
             weight_chunk = W[c0:c1]
             c_dt = c_dtype or torch.float16
             inv_h = (
-                self.inv_hessian.to(c_dt)
-                .unsqueeze(0)
-                .expand(B, -1, -1)
-                .clone()
+                self.inv_hessian.to(c_dt).unsqueeze(0).expand(B, -1, -1).clone()
             )
-            pruned_mask = torch.ones(
-                B, num_cols, device=device
-            )
+            pruned_mask = torch.ones(B, num_cols, device=device)
 
             for blk in range(num_batches):
                 batch_gids = block_order[
-                    blk * ng : min(
-                        (blk + 1) * ng, num_parts
-                    )
+                    blk * ng : min((blk + 1) * ng, num_parts)
                 ]
                 n_g = batch_gids.shape[0]
 
                 batch_col_map = col_map[batch_gids]
                 base_cols = batch_col_map.reshape(-1)
 
-                ri = batch_col_map.unsqueeze(2).expand(
-                    n_g, epg, epg
-                )
-                ci_idx = (
-                    batch_col_map.unsqueeze(1).expand(
-                        n_g, epg, epg
-                    )
-                )
+                ri = batch_col_map.unsqueeze(2).expand(n_g, epg, epg)
+                ci_idx = batch_col_map.unsqueeze(1).expand(n_g, epg, epg)
                 inv_diag = (
                     inv_h[
                         :,
@@ -1606,18 +1311,12 @@ class StructuredOBS:
                     .float()
                 )
 
-                weight_all = weight_chunk[
-                    :, base_cols
-                ].view(B, n_g, epg)
+                weight_all = weight_chunk[:, base_cols].view(B, n_g, epg)
 
                 if scoring == "independent":
-                    inv_diag_vec = torch.diagonal(
-                        inv_diag, dim1=-2, dim2=-1
-                    )
+                    inv_diag_vec = torch.diagonal(inv_diag, dim1=-2, dim2=-1)
                     if bk == 1:
-                        elem_cost = weight_all**2 / (
-                            inv_diag_vec + 1e-8
-                        )
+                        elem_cost = weight_all**2 / (inv_diag_vec + 1e-8)
                         _, prune_idx = elem_cost.topk(
                             num_prune,
                             dim=-1,
@@ -1625,10 +1324,7 @@ class StructuredOBS:
                         )
                     else:
                         block_cost = (
-                            (
-                                weight_all**2
-                                / (inv_diag_vec + 1e-8)
-                            )
+                            (weight_all**2 / (inv_diag_vec + 1e-8))
                             .view(B, n_g, gs, bk)
                             .sum(-1)
                         )
@@ -1639,9 +1335,7 @@ class StructuredOBS:
                         )
                         prune_idx = (
                             blk_idx.unsqueeze(-1) * bk
-                            + torch.arange(
-                                bk, device=device
-                            )
+                            + torch.arange(bk, device=device)
                         ).view(B, n_g, np_cols)
                     pruned_local = prune_idx
                 else:
@@ -1658,60 +1352,37 @@ class StructuredOBS:
                     )
                     for si in range(n_subs):
                         co = sub_to_cols[si]
-                        weight_pruned = (
-                            weight_all[:, :, co]
-                        )
+                        weight_pruned = weight_all[:, :, co]
 
                         if use_closed_form:
-                            a = inv_diag[
-                                :, :, co[0], co[0]
-                            ]
-                            b_ = inv_diag[
-                                :, :, co[0], co[1]
-                            ]
-                            d = inv_diag[
-                                :, :, co[1], co[1]
-                            ]
-                            det = (
-                                a * d - b_ * b_ + 1e-8
-                            )
-                            w0 = weight_pruned[
-                                :, :, 0
-                            ]
-                            w1 = weight_pruned[
-                                :, :, 1
-                            ]
+                            a = inv_diag[:, :, co[0], co[0]]
+                            b_ = inv_diag[:, :, co[0], co[1]]
+                            d = inv_diag[:, :, co[1], co[1]]
+                            det = a * d - b_ * b_ + 1e-8
+                            w0 = weight_pruned[:, :, 0]
+                            w1 = weight_pruned[:, :, 1]
                             cost = (
-                                w0 * w0 * d
-                                - 2 * w0 * w1 * b_
-                                + w1 * w1 * a
+                                w0 * w0 * d - 2 * w0 * w1 * b_ + w1 * w1 * a
                             ) / det
                         else:
-                            inv_pruned = inv_diag[
-                                :, :, co
-                            ][:, :, :, co]
-                            eye_pp = (
-                                1e-8
-                                * torch.eye(
-                                    np_cols,
-                                    device=device,
+                            inv_pruned = inv_diag[:, :, co][:, :, :, co]
+                            eye_pp = 1e-8 * torch.eye(
+                                np_cols,
+                                device=device,
+                            )
+                            inv_pruned_inv = (
+                                LA.inv(  # pylint: disable=not-callable
+                                    (inv_pruned + eye_pp).reshape(
+                                        B * n_g,
+                                        np_cols,
+                                        np_cols,
+                                    )
                                 )
                             )
-                            inv_pruned_inv = LA.inv(  # pylint: disable=not-callable
-                                (
-                                    inv_pruned + eye_pp
-                                ).reshape(
-                                    B * n_g,
-                                    np_cols,
-                                    np_cols,
-                                )
-                            )
-                            weight_flat = (
-                                weight_pruned.reshape(
-                                    B * n_g,
-                                    1,
-                                    np_cols,
-                                )
+                            weight_flat = weight_pruned.reshape(
+                                B * n_g,
+                                1,
+                                np_cols,
                             )
                             cost = (
                                 (
@@ -1729,48 +1400,36 @@ class StructuredOBS:
                             )
 
                         better = cost < best_cost
-                        best_cost[better] = cost[
-                            better
-                        ]
+                        best_cost[better] = cost[better]
                         best_si[better] = si
 
-                    pruned_local = sub_to_cols[
-                        best_si.view(-1)
-                    ].view(B, n_g, np_cols)
+                    pruned_local = sub_to_cols[best_si.view(-1)].view(
+                        B, n_g, np_cols
+                    )
 
                 g_exp = (
                     torch.arange(n_g, device=device)
                     .view(1, n_g, 1)
                     .expand(B, n_g, np_cols)
                 )
-                all_p = batch_col_map[
-                    g_exp, pruned_local
-                ].reshape(B, n_g * np_cols)
+                all_p = batch_col_map[g_exp, pruned_local].reshape(
+                    B, n_g * np_cols
+                )
                 np_total = all_p.shape[1]
 
-                pc_exp = all_p.unsqueeze(1).expand(
-                    B, num_cols, np_total
-                )
-                inv_col_prune = inv_h.gather(
-                    2, pc_exp
-                )
+                pc_exp = all_p.unsqueeze(1).expand(B, num_cols, np_total)
+                inv_col_prune = inv_h.gather(2, pc_exp)
 
-                eye_n = 1e-8 * torch.eye(
-                    np_total, device=device
-                )
+                eye_n = 1e-8 * torch.eye(np_total, device=device)
                 inv_pruned = inv_col_prune.gather(
                     1,
-                    all_p.unsqueeze(2).expand(
-                        B, np_total, np_total
-                    ),
+                    all_p.unsqueeze(2).expand(B, np_total, np_total),
                 ).float()
                 inv_pruned_inv = LA.inv(  # pylint: disable=not-callable
                     inv_pruned + eye_n
                 )
 
-                weight_pruned = weight_chunk.gather(
-                    1, all_p
-                )
+                weight_pruned = weight_chunk.gather(1, all_p)
                 comp = torch.bmm(
                     inv_col_prune.float(),
                     inv_pruned_inv,
@@ -1783,26 +1442,20 @@ class StructuredOBS:
                 weight_chunk.scatter_(
                     1,
                     all_p,
-                    torch.zeros(
-                        B, np_total, device=device
-                    ),
+                    torch.zeros(B, np_total, device=device),
                 )
 
                 lpp = LA.cholesky(  # pylint: disable=not-callable
                     inv_pruned_inv + eye_n
                 )
-                schur_factor = torch.bmm(
-                    inv_col_prune, lpp.to(c_dt)
-                )
+                schur_factor = torch.bmm(inv_col_prune, lpp.to(c_dt))
                 inv_h.baddbmm_(
                     schur_factor,
                     schur_factor.transpose(1, 2),
                     alpha=-1.0,
                 )
 
-                pruned_mask.scatter_(
-                    1, all_p, 0.0
-                )
+                pruned_mask.scatter_(1, all_p, 0.0)
 
             weight_chunk *= pruned_mask
             del inv_h

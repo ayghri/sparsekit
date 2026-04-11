@@ -6,10 +6,10 @@ types.  You do not instantiate them directly — use :class:`~sparsekit.block.Bl
 :class:`~sparsekit.block.BlockCoupling`, :class:`~sparsekit.scope.ScopeSpec`,
 or :class:`~sparsekit.scope.ScopeCoupling` instead.
 
-SparseNode
-----------
+SparseBlock
+-----------
 
-.. autoclass:: sparsekit.block.SparseNode
+.. autoclass:: sparsekit.block.SparseBlock
    :members:
    :show-inheritance:
 

@@ -5,8 +5,8 @@
 """Scope-level sparsity specification over block grid."""
 
 from dataclasses import dataclass, field
-from typing import Optional, Tuple, List, Dict, Set, Mapping, Iterable
-from functools import cached_property
+from typing import Optional, Tuple, List, Set, Mapping, Iterable
+from functools import cached_property, lru_cache
 
 import math
 
@@ -32,20 +32,23 @@ from .block import CouplingError
 class SparseScope(ABC):
     """Abstract base class for scope-level sparsity specifications."""
 
-    @cached_property
-    @abstractmethod
-    def grid_shape(self) -> Tuple[int, ...]:
-        """Shape of the scope grid (number of scopes per dimension)."""
-        pass
-
-    @cached_property
-    def num_scopes(self) -> int:
-        """Total number of scopes."""
+    @lru_cache()
+    def numscp(self) -> int:
         return math.prod(self.grid_shape)
 
-    @cached_property
+    @lru_cache()
+    def numblk(self) -> int:
+        return self.numscp() * self.numblk_per_scope()
+
+    @lru_cache()
     @abstractmethod
-    def scope_numel(self) -> int:
+    def numblk_per_scope(self) -> int:
+        """Number of blocks per scope."""
+        pass
+
+    @lru_cache()
+    @abstractmethod
+    def numel_per_scope(self) -> int:
         """Number of blocks per scope."""
         pass
 
@@ -53,15 +56,21 @@ class SparseScope(ABC):
     def nnz(self, eps=1e-8) -> int:
         pass
 
+    @cached_property
     @abstractmethod
-    def specs(self) -> Iterable[SparseBlock]:
+    def grid_shape(self) -> Tuple[int, ...]:
+        """Shape of the scope grid (number of scopes per dimension)."""
         pass
 
-    @property
     @abstractmethod
-    def data(self) -> Mapping[SparseBlock, Tensor] | Tensor:
-        """Raw tensor data of the underlying parameter(s)."""
+    def blocks(self) -> Iterable[SparseBlock]:
         pass
+
+    # @property
+    # @abstractmethod
+    # def data(self) -> Mapping[SparseBlock, Tensor] | Tensor:
+    #     """Raw tensor data of the underlying parameter(s)."""
+    #     pass
 
     @abstractmethod
     @torch.no_grad()
@@ -94,8 +103,9 @@ class SparseScope(ABC):
     def get_masks(
         self,
         nnz: int,
-        block_scores: Tensor | None = None,
         values: Values = None,
+        block_scores: Tensor | None = None,
+        block_mask: Tensor | None = None,
         **kwargs,
     ) -> Mapping[SparseBlock, Tensor]:
         pass
@@ -154,7 +164,9 @@ class ScopeSpec(SparseScope):
             ]
         )
 
-        for i, (block_idx, gi) in enumerate(zip(self.block.grid_shape, self.shape)):
+        for i, (block_idx, gi) in enumerate(
+            zip(self.block.grid_shape, self.shape)
+        ):
             if block_idx % gi != 0:
                 raise ValueError(
                     f"dim {i}: block_grid[{i}]={block_idx} "
@@ -162,40 +174,31 @@ class ScopeSpec(SparseScope):
                     f"block_size[{i}]={gi}"
                 )
 
-    # ── Properties ────────────────────────────────────────────────────
-
-    @property
-    def data(self) -> Mapping[SparseBlock, Tensor]:
-        """Dict mapping each SparseBlock to its tensor data."""
-        data = self.block.data
-        if isinstance(data, Tensor):
-            assert isinstance(self.block, SparseBlock)
-            return {self.block: data}
-        else:
-            return data
-
     @cached_property
     def grid_shape(self) -> Tuple[int, ...]:
         """Full grid shape including singleton dimensions."""
         return tuple(
-            block_idx // gi for block_idx, gi in zip(self.block.grid_shape, self.shape)
+            block_idx // gi
+            for block_idx, gi in zip(self.block.grid_shape, self.shape)
         )
 
-    @cached_property
-    def scope_numel(self) -> int:
-        """Total number of elements across all scopes."""
-        return math.prod(self.grid_shape)
+    # @cached_property
+    # def scope_numel(self) -> int:
+    #     """Total number of elements across all scopes."""
+    #     return math.prod(self.grid_shape)
 
-    @property
-    def block_numel(self) -> int:
+    @lru_cache()
+    def numel_per_scope(self) -> int:
         """Number of blocks per scope."""
         return math.prod(self.shape)
 
-    # ── Methods ──────────────────────────────────────────────────────
+    @lru_cache()
+    def numblk_per_scope(self) -> int:
+        """Number of blocks per scope."""
+        return math.prod(self.shape)
 
-    def specs(self) -> Iterable[SparseBlock]:
-        g = self.block
-        return list(g.specs()) if isinstance(g, SparseBlock) else list(g.specs)
+    def blocks(self) -> Iterable[SparseBlock]:
+        return [self.block]
 
     def nnz(self, eps=1e-8) -> int:
         return self.block.nnz(eps=eps)
@@ -215,7 +218,9 @@ class ScopeSpec(SparseScope):
         """
         assert b.shape[: len(self.block.grid_shape)] == self.block.grid_shape
         inter_shape = [
-            grid_idx for pair in zip(self.grid_shape, self.shape) for grid_idx in pair
+            grid_idx
+            for pair in zip(self.grid_shape, self.shape)
+            for grid_idx in pair
         ]
         view = b.view(*inter_shape)
         if reorder or merge:
@@ -272,7 +277,9 @@ class ScopeSpec(SparseScope):
         """
         block_scores = self.block_norms(element_values)
         # top_scores = kth_largest(block_scores, k=nnz, dim=-1)
-        top_scores = mid_kth_largest(block_scores, k=nnz, dim=-1, k_weight=k_weight)
+        top_scores = mid_kth_largest(
+            block_scores, k=nnz, dim=-1, k_weight=k_weight
+        )
         top_scores = top_scores.view(self.grid_shape)
         return top_scores
 
@@ -300,7 +307,7 @@ class ScopeSpec(SparseScope):
             if nnz is None:
                 raise ValueError("One of{thresholds, nnz} should be provided")
 
-            if nnz == self.block_numel:
+            if nnz == self.numblk_per_scope():
                 return
 
             thresholds = self.kth_largest(values, nnz=nnz)
@@ -311,7 +318,10 @@ class ScopeSpec(SparseScope):
         self.block.hard_threshold(block_thresholds, values=values)
 
     def sparsity_to_nnz(self, sparsity: float):
-        return max(self.block_numel - int(sparsity * self.block_numel), 0)
+        return max(
+            self.numblk_per_scope() - int(sparsity * self.numblk_per_scope()),
+            0,
+        )
 
     @torch.no_grad()
     def get_masks(
@@ -339,7 +349,9 @@ class ScopeSpec(SparseScope):
             if block_scores is None:
                 block_scores = self.block_norms(values)
             else:
-                assert block_scores.shape == self.grid_shape + (self.block_numel,)
+                assert block_scores.shape == self.grid_shape + (
+                    self.numblk_per_scope(),
+                )
 
             thresholds = kth_largest(block_scores, k=nnz, dim=-1).unsqueeze(-1)
             # indices = torch.topk(block_scores, k=nnz, dim=-1)[1]
@@ -348,7 +360,7 @@ class ScopeSpec(SparseScope):
             block_mask = block_scores >= thresholds
 
         block_mask = unmerge_odd_dims(
-            block_mask.view(self.grid_shape + (self.block_numel,)),
+            block_mask.view(self.grid_shape + (self.numblk_per_scope(),)),
             self.shape,
         )
 
@@ -382,7 +394,7 @@ class ScopeSpec(SparseScope):
         eps = get_dtype_epsilon(thresholds.dtype, eps)
         block_thresholds = self.scope_to_block(thresholds)
         if scale:
-            block_thresholds = block_thresholds * (self.block.block_numel**0.5)
+            block_thresholds = block_thresholds * (self.block.numel() ** 0.5)
 
         self.block.soft_threshold(
             block_thresholds,
@@ -392,9 +404,9 @@ class ScopeSpec(SparseScope):
             eps=eps,
         )
 
-    def apply_mask(self, mask: Tensor) -> None:
-        assert mask.shape == tuple(self.grid_shape + (self.block_numel,))
-
+    # def apply_mask(self, mask: Tensor) -> None:
+    #     assert mask.shape == tuple(self.grid_shape + (self.numblk_per_scope(),))
+    #
     def __repr__(self):
         return (
             f"{self.__class__.__name__}[block_shape={self.shape}, "
@@ -462,45 +474,47 @@ class ScopeCoupling(SparseScope):
 
     # ── Properties ────────────────────────────────────────────────────
 
-    @property
-    def num_blocks(self) -> int:
+    @lru_cache()
+    def numblk(self) -> int:
         """Total number of blocks across all coupled scopes."""
-        return sum([s.block_numel for s in self.scopes])
+        return sum([s.numblk() for s in self.scopes])
 
     @property
     def params(self) -> Set[View]:
         """Expose underlying views for optimizer integration."""
         return {p for g in self.scopes for p in g.block.parameters()}
 
-    @property
-    def data(self) -> Mapping[SparseBlock, Tensor]:
+    def blocks(self) -> Iterable[SparseBlock]:
         """Merged dict mapping each SparseBlock to its tensor data."""
-        merged: Dict[SparseBlock, Tensor] = {}
-        for g in self.scopes:
-            merged.update(g.data)
+        merged = []
+        for sc in self.scopes:
+            merged.extend(sc.blocks())
         return merged
+
+        # merged: Dict[SparseBlock, Tensor] = {}
+        # for g in self.scopes:
+        #     merged.update(g.data)
+        # return merged
 
     @cached_property
     def grid_shape(self) -> Tuple[int, ...]:
         """Reference scope grid shape (after order permutation)."""
         return self._ref_scope_grid_shape
 
-    @property
-    def block_numel(self) -> int:
+    @lru_cache()
+    def numblk_per_scope(self) -> int:
         """Total blocks per scope across all coupled scopes."""
-        return sum(g.block_numel for g in self.scopes)
+        return sum(s.numblk_per_scope() for s in self.scopes)
 
-    # ── Methods ──────────────────────────────────────────────────────
-
-    def specs(self) -> Iterable[SparseBlock]:
-        return [s for g in self.scopes for s in g.specs()]
-
-    @cached_property
-    def scope_numel(self) -> int:
-        return sum([g.block.block_numel for g in self.scopes])
+    @lru_cache()
+    def numel_per_scope(self) -> int:
+        return sum([s.numel_per_scope() for s in self.scopes])
 
     def nnz(self, eps=1e-8) -> int:
         return sum(g.nnz(eps=eps) for g in self.scopes)
+
+    def specs(self) -> Iterable[SparseBlock]:
+        return [s for g in self.scopes for s in g.blocks()]
 
     def block_norms(self, values: Values) -> Tensor:
         blocked_block_norms = torch.cat(
@@ -532,7 +546,6 @@ class ScopeCoupling(SparseScope):
         thresholds: Optional[Tensor] = None,
         nnz: Optional[int] = None,
         values: Values = None,
-        sparsity: Optional[float] = None,
     ):
         """Compute kappa-largest block norm among coupled
         scopes from all specs then sends the threshold
@@ -544,23 +557,19 @@ class ScopeCoupling(SparseScope):
 
         if thresholds is None:
             if nnz is None:
-                if sparsity is None:
-                    raise ValueError(
-                        "Either block_thresholds "
-                        "or kappa or sparsity "
-                        "should be provided"
-                    )
-                else:
-                    nnz = self.block_numel - int(sparsity * self.block_numel)
-
-            if nnz == self.block_numel:
-                return
+                raise ValueError("Either thresholds or nnz")
 
             thresholds = self.kth_largest(k=nnz, values=values)
 
         assert thresholds.shape == self.grid_shape
-        for ro, g in zip(self._reverse_orders, self.scopes):
-            g.hard_threshold(thresholds=thresholds.permute(ro).reshape(g.grid_shape))
+        for ro, s in zip(self._reverse_orders, self.scopes):
+            s.hard_threshold(
+                thresholds=thresholds.permute(ro).reshape(s.grid_shape)
+            )
+
+    def sparsity_to_nnz(self, sparsity_to_nnz):
+        pass
+        # nnz = self.nu - int(sparsity * self.block_numel)
 
     @torch.no_grad()
     def soft_threshold(
@@ -596,7 +605,9 @@ class ScopeCoupling(SparseScope):
         if block_scores is None:
             block_scores = self.block_norms(values)
         else:
-            assert block_scores.shape == self.grid_shape + (self.block_numel,)
+            assert block_scores.shape == self.grid_shape + (
+                self.numblk_per_scope(),
+            )
 
         indices = torch.topk(block_scores, k=nnz, dim=-1)[1]
 
@@ -606,11 +617,15 @@ class ScopeCoupling(SparseScope):
         spec_masks = {}
         slice_start = 0
         for ro, g in zip(self._reverse_orders, self.scopes):
-            block_slice = block_mask[..., slice_start : slice_start + g.block_numel]
+            block_slice = block_mask[
+                ..., slice_start : slice_start + g.numblk_per_scope()
+            ]
             spec_masks.update(
-                g.get_masks(nnz=0, block_mask=block_slice.permute(ro + (len(ro),)))
+                g.get_masks(
+                    nnz=0, block_mask=block_slice.permute(ro + (len(ro),))
+                )
             )
-            slice_start += g.block_numel
+            slice_start += g.numblk_per_scope()
 
         return spec_masks
 

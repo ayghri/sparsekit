@@ -261,14 +261,14 @@ class TestSoftThresholdAdam:
 
 
 class TestBlockSpecBasics:
-    def test_block_grid_shape_and_num_blocks_2x2(self):
+    def test_block_grid_shape_and_numblk_2x2(self):
         p = Parameter(torch.zeros(4, 4))
         spec = BlockSpec(p, shape=(2, 2))
 
         # 4x4 with 2x2 groups -> 2x2 grid
         assert spec.grid_shape == (2, 2)
-        assert spec.num_blocks == 4
-        assert spec.block_numel == 4
+        assert spec.numblk() == 4
+        assert spec.numel_per_block() == 4
 
     def test_block_grid_shape_single_block(self):
         p = Parameter(torch.zeros(4, 4))
@@ -276,8 +276,8 @@ class TestBlockSpecBasics:
 
         # Single group -> grid (1,1)
         assert spec.grid_shape == (1, 1)
-        assert spec.num_blocks == 1
-        assert spec.block_numel == 16
+        assert spec.numblk() == 1
+        assert spec.numel_per_block() == 16
 
     def test_invalid_block_shape_dimension_mismatch(self):
         p = Parameter(torch.zeros(4, 4))

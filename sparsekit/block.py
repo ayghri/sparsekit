@@ -6,20 +6,29 @@
 
 from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
-from functools import cached_property
+from functools import cached_property, lru_cache
 
-from typing import Any, Optional, Tuple, List, Mapping, Iterable, Callable, Union
+from typing import (
+    Any,
+    Optional,
+    Tuple,
+    List,
+    Mapping,
+    Iterable,
+    Callable,
+    Union,
+)
 
 
 import math
 import torch
 from torch import Tensor
+from torch.nn import Parameter
 
 from .tensor_ops import interleave_unsqueeze
 from .tensor_ops import inverse_permutation, normalize_order
 from .tensor_ops import get_dtype_epsilon
 from .view import View
-
 
 Values = Union[Tensor, Mapping[Any, Tensor], None]
 
@@ -86,11 +95,6 @@ class SparseBlock(ABC):
         return len(self.grid_shape)
 
     @cached_property
-    def num_blocks(self) -> int:
-        """Total number of blocks in the grid."""
-        return math.prod(self.grid_shape)
-
-    @cached_property
     @abstractmethod
     def grid_shape(self) -> Tuple[int, ...]:
         """Shape of the block grid (number of blocks per dimension)."""
@@ -112,9 +116,15 @@ class SparseBlock(ABC):
         """Count non-zero elements with absolute value > eps."""
         pass
 
-    @cached_property
+    def numblk(self) -> int:
+        return math.prod(self.grid_shape)
+
+    def numel(self) -> int:
+        return self.numblk() * self.numel_per_block()
+
+    @lru_cache()
     @abstractmethod
-    def block_numel(self) -> int:
+    def numel_per_block(self) -> int:
         """Number of elements per block."""
         pass
 
@@ -140,7 +150,9 @@ class SparseBlock(ABC):
         pass
 
     @abstractmethod
-    def reduce(self, values: Values, reduce_fn: Callable[[Tensor], Tensor]) -> Tensor:
+    def reduce(
+        self, values: Values, reduce_fn: Callable[[Tensor], Tensor]
+    ) -> Tensor:
         """Apply reduce_fn over each block and return grid-shaped result."""
         pass
 
@@ -218,7 +230,7 @@ class SparseBlock(ABC):
         self.apply_mask(blocks_to_mask)
 
     @abstractmethod
-    def get_masks(self, block_masks: Tensor) -> Mapping["BlockSpec", Tensor]:
+    def get_masks(self, block_masks: Tensor) -> Mapping["SparseBlock", Tensor]:
         """Convert block-level mask to element-level masks per BlockSpec."""
         pass
 
@@ -244,7 +256,7 @@ class BlockSpec(SparseBlock):
         name: Optional name for identification.
     """
 
-    view: View
+    view: View | Parameter
     shape: Tuple[int, ...]
     name: Optional[str] = None
 
@@ -287,13 +299,9 @@ class BlockSpec(SparseBlock):
         """Full grid shape including singleton dimensions."""
         return tuple(si // bi for si, bi in zip(self.view.shape, self.shape))
 
-    @cached_property
-    def num_blocks(self) -> int:
-        """Total number of blocks in the grid."""
-        return math.prod(self.grid_shape)
 
-    @cached_property
-    def block_numel(self) -> int:
+    @lru_cache()
+    def numel_per_block(self) -> int:
         """Number of elements per block."""
         return math.prod(self.shape)
 
@@ -302,13 +310,9 @@ class BlockSpec(SparseBlock):
         """Odd-indexed dimensions to reduce over for block statistics."""
         return tuple(range(1, 2 * len(self.shape), 2))
 
-    def specs(self) -> Iterable["BlockSpec"]:
+    def blocks(self) -> Iterable[SparseBlock]:
         """Return self as the only BlockSpec."""
         return [self]
-
-    # def numel(self) -> int:
-    #     """Number of elements in the underlying tensor."""
-    #     return math.prod(self.shape)
 
     def parameters(self) -> List[View]:
         """List containing the single underlying Parameter."""
@@ -342,9 +346,13 @@ class BlockSpec(SparseBlock):
             raise ShapeMismatchError(
                 tuple(self.view.shape), tuple(values.shape), "values"
             )
-        raise ValueError("values has to be None, Tensor or Dict[BlockSpec, Tensor]")
+        raise ValueError(
+            "values has to be None, Tensor or Dict[BlockSpec, Tensor]"
+        )
 
-    def block_view(self, values: Values, reorder: bool = True, merge=False) -> Tensor:
+    def block_view(
+        self, values: Values, reorder: bool = True, merge=False
+    ) -> Tensor:
         """Reshape tensor to interleaved block view.
 
         Args:
@@ -366,7 +374,9 @@ class BlockSpec(SparseBlock):
         """
         return block_values.view(self.grid_shape)
 
-    def broadcast_block_to_element(self, block_values: Tensor, fake=False) -> Tensor:
+    def broadcast_block_to_element(
+        self, block_values: Tensor, fake=False
+    ) -> Tensor:
         """Broadcast block grid-shaped tensor to full tensor shape.
 
         Args:
@@ -377,7 +387,9 @@ class BlockSpec(SparseBlock):
             Tensor with shape self.shape (or interleaved if fake=True).
         """
         assert tuple(block_values.shape) == self.grid_shape
-        return View.broadcast_block_to_element(block_values, self.shape, fake=fake)
+        return View.broadcast_block_to_element(
+            block_values, self.shape, fake=fake
+        )
 
     def apply_mask(self, mask: Tensor):
         """Zero out blocks where mask is True."""
@@ -391,10 +403,14 @@ class BlockSpec(SparseBlock):
             self.view.apply_multiplier(multiplier, self.shape)
         else:
             multiplier = interleave_unsqueeze(multiplier)
-            b_view = View.block_view_of(self.view.data, self.shape, reorder=False)
+            b_view = View.block_view_of(
+                self.view.data, self.shape, reorder=False
+            )
             b_view.mul_(multiplier)
 
-    def reduce(self, values: Values, reduce_fn: Callable[[Tensor], Tensor]) -> Tensor:
+    def reduce(
+        self, values: Values, reduce_fn: Callable[[Tensor], Tensor]
+    ) -> Tensor:
         """Apply reduce_fn over each block and return grid-shaped result."""
         t = self.block_view(values, reorder=False)
         return reduce_fn(t).view(self.grid_shape)
@@ -415,7 +431,7 @@ class BlockSpec(SparseBlock):
         assert isinstance(conditioner, Tensor)
         assert conditioner.shape == self.view.shape
 
-        if self.block_numel == 1:
+        if self.numel_per_block() == 1:
             return self._soft_threshold_euclid(
                 block_thresholds / conditioner.view(self.grid_shape), eps=eps
             )
@@ -436,8 +452,12 @@ class BlockSpec(SparseBlock):
         mu_high = (block_thresholds * h_max) / denom
 
         # (B1, 1, B2,1,...)
-        mu_low = self.broadcast_block_to_element(mu_low, fake=True).clamp_(min=0.0)
-        mu_high = self.broadcast_block_to_element(mu_high, fake=True).clamp_(min=0.0)
+        mu_low = self.broadcast_block_to_element(mu_low, fake=True).clamp_(
+            min=0.0
+        )
+        mu_high = self.broadcast_block_to_element(mu_high, fake=True).clamp_(
+            min=0.0
+        )
 
         blocked_e_thresholds = self.broadcast_block_to_element(
             block_thresholds, fake=True
@@ -473,7 +493,8 @@ class BlockSpec(SparseBlock):
                 break
 
         scaling = conditioner / (
-            conditioner + self.broadcast_block_to_element(mu.view(self.grid_shape))
+            conditioner
+            + self.broadcast_block_to_element(mu.view(self.grid_shape))
         )
 
         self.set_data(scaling * self.view.data)
@@ -566,15 +587,10 @@ class BlockCoupling(SparseBlock):
         """Grid shape for the coupling (after order permutation)."""
         return tuple(self.specs[0].grid_shape[i] for i in self.orders[0])
 
-    @cached_property
-    def num_blocks(self) -> int:
-        """Number of blocks (same for all specs after alignment)."""
-        return self.specs[0].num_blocks
-
-    @cached_property
-    def block_numel(self) -> int:
+    @lru_cache()
+    def numel_per_block(self) -> int:
         """Total elements per block across all specs."""
-        return sum([s.block_numel for s in self.specs])
+        return sum([s.numel_per_block() for s in self.specs])
 
     @cached_property
     def _reduction_dim(self):
@@ -597,7 +613,9 @@ class BlockCoupling(SparseBlock):
             return {s: values[s] for s in self.specs}
         raise ValueError("values must be Mapping[BlockSpec,Tensor]")
 
-    def _raw_block_view(self, spec_values: Mapping[BlockSpec, Tensor]) -> Tensor:
+    def _raw_block_view(
+        self, spec_values: Mapping[BlockSpec, Tensor]
+    ) -> Tensor:
         """Reshape and concatenate all spec values into unified block view.
 
         Args:
@@ -614,12 +632,16 @@ class BlockCoupling(SparseBlock):
             values.append(merged.permute(*o, ndim))
         return torch.concat(values, dim=-1)
 
-    def block_view(self, values: Values, reorder: bool = True, merge=False) -> Tensor:
+    def block_view(
+        self, values: Values, reorder: bool = True, merge=False
+    ) -> Tensor:
         """Return concatenated block view across all specs."""
         spec_values = self._resolve_values(values)
         return self._raw_block_view(spec_values)
 
-    def reduce(self, values: Values, reduce_fn: Callable[[Tensor], Tensor]) -> Tensor:
+    def reduce(
+        self, values: Values, reduce_fn: Callable[[Tensor], Tensor]
+    ) -> Tensor:
         """Apply reduce_fn over concatenated block view."""
         spec_values = self._resolve_values(values)
         concat_values = self._raw_block_view(spec_values)
@@ -632,6 +654,7 @@ class BlockCoupling(SparseBlock):
 
         assert tuple(block_thresholds.shape) == self.grid_shape
 
+        eps = get_dtype_epsilon(block_thresholds.dtype, eps)
         block_norms = self.norms({s: s.view.data for s in self.specs})
 
         block_factor = 1 - block_thresholds / (block_norms + eps)
@@ -652,6 +675,7 @@ class BlockCoupling(SparseBlock):
         assert isinstance(conditioners, Mapping)
         for s in self.specs:
             assert conditioners[s].shape == s.view.shape
+        eps = get_dtype_epsilon(block_thresholds.dtype, eps)
 
         hess_weighted = {s: conditioners[s] * s.view.data for s in self.specs}
         hess_weighted_norms = self.norms(hess_weighted)
@@ -660,7 +684,7 @@ class BlockCoupling(SparseBlock):
 
         denom = hess_weighted_norms - block_thresholds
         non_survivors = denom <= 0.0
-        denom.clamp_(min=0.0)
+        denom.clamp_(min=eps)
 
         h_min = self.min(conditioners)
         h_max = self.max(conditioners)
@@ -707,7 +731,9 @@ class BlockCoupling(SparseBlock):
                 * conditioners[s]
                 / (
                     conditioners[s]
-                    + s.broadcast_block_to_element(mu.permute(o).reshape(s.grid_shape))
+                    + s.broadcast_block_to_element(
+                        mu.permute(o).reshape(s.grid_shape)
+                    )
                 )
             )
 
@@ -728,7 +754,9 @@ class BlockCoupling(SparseBlock):
 
     def apply_multiplier(self, multiplier: Tensor):
         """Multiply each block by corresponding scalar across all specs."""
-        assert tuple(multiplier.shape) == self.grid_shape, "Incompatible Multiplier"
+        assert (
+            tuple(multiplier.shape) == self.grid_shape
+        ), "Incompatible Multiplier"
         for ro, s in zip(self._reverse_orders, self.specs):
             m = multiplier.permute(ro).reshape(s.grid_shape)
             s.apply_multiplier(m)

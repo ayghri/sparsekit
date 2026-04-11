@@ -92,8 +92,6 @@ def get_dtype_epsilon(dtype, epsilon):
     return epsilon
 
 
-# ── Permutation utilities ───────────────────────────────────────────
-
 
 def normalize_order(order: Optional[Tuple[int, ...]], dim: int) -> Tuple[int, ...]:
     """Validate that ``order`` is a permutation of range(dim).
@@ -131,8 +129,6 @@ def inverse_permutation(perm: Tuple[int, ...]) -> Tuple[int, ...]:
         inv[p] = i
     return tuple(inv)
 
-
-# ── Top-k dispatch ──────────────────────────────────────────────────
 
 
 def kth_largest(

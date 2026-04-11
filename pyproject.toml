@@ -1,12 +1,26 @@
 [tool.poetry]
 name = "sparsekit"
-version = "0.1.0"
+version = "0.1.3"
 description = "Sparsity Kit for Structured Sparsity Specification"
-authors = ["Ayoub Ghriss research@ayghri.me"]
+authors = ["Ayoub Ghriss <research@ayghri.me>"]
 readme = "README.md"
 packages = [{ include = "sparsekit" }]
-license-files = ["LICENSE"]
-license = "CC BY-NC 4.0"
+license = "CC-BY-NC-4.0"
+keywords = ["sparsity", "pruning", "neural networks", "structured sparsity", "triton", "pytorch"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: OS Independent",
+]
+
+[tool.poetry.urls]
+"Homepage" = "https://github.com/ayghri/sparsekit"
+"Repository" = "https://github.com/ayghri/sparsekit"
 
 
 [tool.poetry.dependencies]

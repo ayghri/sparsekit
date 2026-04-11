@@ -20,15 +20,15 @@ class TestScopeSpecInit:
         g = ScopeSpec(simple_block_spec, shape=())
         assert g.shape == simple_block_spec.grid_shape
         assert g.grid_shape == (1, 1)
-        assert g.num_scopes == 1
-        assert g.block_numel == g.shape[0] * g.shape[1]
+        assert g.numscp() == 1
+        assert g.numblk_per_scope() == g.shape[0] * g.shape[1]
 
     def test_init_explicit_block_shape(self, simple_block_spec):
         g = ScopeSpec(simple_block_spec, shape=(1, 2))
         assert g.shape == (1, 2)
         assert g.grid_shape == (2, 1)
-        assert g.num_scopes == 2 * 1
-        assert g.block_numel == 1 * 2
+        assert g.numscp() == 2 * 1
+        assert g.numblk_per_scope() == 1 * 2
 
     def test_init_block_shape_mismatch_raises(self, simple_block_spec):
         with pytest.raises(ValueError):
@@ -45,7 +45,7 @@ class TestScopeSpecViews:
         # use group norms as representative per-group values (non-uniform)
         block_vals = simple_block_spec.norms(None)
         grouped = g.block_to_scope(block_vals, reorder=False)
-        assert grouped.view(-1).numel() == g.num_scopes * g.block_numel
+        assert grouped.view(-1).numel() == g.numscp() * g.numblk_per_scope()
         # Values are only rearranged, not changed
         assert torch.allclose(
             grouped.view(-1).sort().values, block_vals.view(-1).sort().values
