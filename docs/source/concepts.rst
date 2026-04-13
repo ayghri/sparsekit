@@ -7,12 +7,12 @@ express arbitrary structured sparsity patterns.
 The Hierarchy
 -------------
 
-Sparsekit uses a four-level hierarchy::
+Sparsekit uses a three-level hierarchy::
 
    nn.Parameter
-     └── View             (strided view, write-through)
-           └── BlockSpec   (block grid, single parameter)
-                 └── ScopeSpec   (scopes of blocks, pruning decision unit)
+    └── View        (strided view of the , write-through)
+    └── BlockSpec   (block grid, single parameter)
+    └── ScopeSpec   (scopes of blocks, pruning decision unit)
 
 Each level adds structure on top of the previous one:
 

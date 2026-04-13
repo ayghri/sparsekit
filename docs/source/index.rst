@@ -6,8 +6,8 @@ Structured Sparsity Specification Kit
 Sparsekit provides a composable hierarchy for specifying and enforcing
 structured sparsity patterns -- from 2:4 and 4:8 to coupled multi-parameter
 patterns.  Pruning and masking write through directly to the
-original ``nn.Parameter`` storage via ``torch.as_strided`` --
-no weight copies are made.
+original ``nn.Parameter`` storage via ``torch.as_strided`` whenever possible to
+avoid copies.
 
 .. toctree::
    :maxdepth: 2
@@ -21,8 +21,8 @@ no weight copies are made.
    :maxdepth: 2
    :caption: API Reference
 
-   api/views
-   api/blocks
+   api/view
+   api/block
    api/scope
    api/builder
    api/obs
