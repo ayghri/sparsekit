@@ -206,7 +206,7 @@ def solve_proximal_adam(
             The target value (eta * lambda).
 
     Returns:
-        mu: Shape (Num_Groups, 1). The scaling factor.
+        mu: Shape (num_blocks, 1). The scaling factor.
     """
     # 1. Compute Norms ||H * v||_2
     hess_weighted = hessian_elements * v_elements

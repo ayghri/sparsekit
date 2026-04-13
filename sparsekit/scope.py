@@ -49,7 +49,7 @@ class SparseScope(ABC):
     @lru_cache()
     @abstractmethod
     def numel_per_scope(self) -> int:
-        """Number of blocks per scope."""
+        """Number of elements per scope."""
         pass
 
     @abstractmethod
@@ -65,12 +65,6 @@ class SparseScope(ABC):
     @abstractmethod
     def blocks(self) -> Iterable[SparseBlock]:
         pass
-
-    # @property
-    # @abstractmethod
-    # def data(self) -> Mapping[SparseBlock, Tensor] | Tensor:
-    #     """Raw tensor data of the underlying parameter(s)."""
-    #     pass
 
     @abstractmethod
     @torch.no_grad()
@@ -109,6 +103,22 @@ class SparseScope(ABC):
         **kwargs,
     ) -> Mapping[SparseBlock, Tensor]:
         pass
+
+    def sparsity_to_nnz(self, sparsity: float) -> int:
+        """Convert a sparsity ratio to number of non-zero blocks per scope.
+
+        Args:
+            sparsity: Fraction of blocks to prune (0.0 = keep all,
+                1.0 = prune all).
+
+        Returns:
+            Number of blocks to keep per scope.
+        """
+        return max(
+            self.numblk_per_scope()
+            - int(sparsity * self.numblk_per_scope()),
+            0,
+        )
 
     @abstractmethod
     def __repr__(self) -> str:
@@ -181,11 +191,6 @@ class ScopeSpec(SparseScope):
             block_idx // gi
             for block_idx, gi in zip(self.block.grid_shape, self.shape)
         )
-
-    # @cached_property
-    # def scope_numel(self) -> int:
-    #     """Total number of elements across all scopes."""
-    #     return math.prod(self.grid_shape)
 
     @lru_cache()
     def numel_per_scope(self) -> int:
@@ -276,7 +281,6 @@ class ScopeSpec(SparseScope):
         This is used to determine the threshold for pruning.
         """
         block_scores = self.block_norms(element_values)
-        # top_scores = kth_largest(block_scores, k=nnz, dim=-1)
         top_scores = mid_kth_largest(
             block_scores, k=nnz, dim=-1, k_weight=k_weight
         )
@@ -289,23 +293,21 @@ class ScopeSpec(SparseScope):
         thresholds: Optional[Tensor] = None,
         nnz: Optional[int] = None,
         values: Values = None,
-        # sparsity: Optional[float] = None,
     ):
         """Zero out blocks in-place based on thresholds.
 
-        Exactly one of ``thresholds``, ``nnz``, or
-        ``sparsity`` must be given.
+        Exactly one of ``thresholds`` or ``nnz`` must be
+        given.
 
         Args:
             thresholds: Per-block thresholds, shape
                 ``grid_shape``.
             nnz: Number of blocks to keep per scope.
             values: Element values for computing norms.
-            sparsity: Fraction to prune (0.5 = 50%).
         """
         if thresholds is None:
             if nnz is None:
-                raise ValueError("One of{thresholds, nnz} should be provided")
+                raise ValueError("One of {thresholds, nnz} must be provided")
 
             if nnz == self.numblk_per_scope():
                 return
@@ -316,12 +318,6 @@ class ScopeSpec(SparseScope):
 
         block_thresholds = self.scope_to_block(thresholds)
         self.block.hard_threshold(block_thresholds, values=values)
-
-    def sparsity_to_nnz(self, sparsity: float):
-        return max(
-            self.numblk_per_scope() - int(sparsity * self.numblk_per_scope()),
-            0,
-        )
 
     @torch.no_grad()
     def get_masks(
@@ -354,9 +350,6 @@ class ScopeSpec(SparseScope):
                 )
 
             thresholds = kth_largest(block_scores, k=nnz, dim=-1).unsqueeze(-1)
-            # indices = torch.topk(block_scores, k=nnz, dim=-1)[1]
-            # block_mask = torch.zeros_like(block_scores).bool()
-            # block_mask.scatter_(-1, indices, True)
             block_mask = block_scores >= thresholds
 
         block_mask = unmerge_odd_dims(
@@ -404,9 +397,6 @@ class ScopeSpec(SparseScope):
             eps=eps,
         )
 
-    # def apply_mask(self, mask: Tensor) -> None:
-    #     assert mask.shape == tuple(self.grid_shape + (self.numblk_per_scope(),))
-    #
     def __repr__(self):
         return (
             f"{self.__class__.__name__}[block_shape={self.shape}, "
@@ -414,9 +404,6 @@ class ScopeSpec(SparseScope):
             f"name={self.name}], "
             f"block={self.block}"
         )
-
-    def __str__(self) -> str:
-        return repr(self)
 
     def __hash__(self) -> int:
         return hash((hash(self.block), self.shape))
@@ -465,7 +452,7 @@ class ScopeCoupling(SparseScope):
         for g, o in zip(self.scopes, self.orders):
             gperm = tuple(g.grid_shape[i] for i in o)
             if gperm != ref_permute:
-                s_name = g.name or "<unnamed"
+                s_name = g.name or "<unnamed>"
                 raise CouplingError(
                     "Incompatible scope shapes "
                     f"after order: {gperm} vs {ref_permute} (spec {s_name})"
@@ -485,16 +472,11 @@ class ScopeCoupling(SparseScope):
         return {p for g in self.scopes for p in g.block.parameters()}
 
     def blocks(self) -> Iterable[SparseBlock]:
-        """Merged dict mapping each SparseBlock to its tensor data."""
+        """All SparseBlock instances across all child scopes."""
         merged = []
         for sc in self.scopes:
             merged.extend(sc.blocks())
         return merged
-
-        # merged: Dict[SparseBlock, Tensor] = {}
-        # for g in self.scopes:
-        #     merged.update(g.data)
-        # return merged
 
     @cached_property
     def grid_shape(self) -> Tuple[int, ...]:
@@ -566,10 +548,6 @@ class ScopeCoupling(SparseScope):
             s.hard_threshold(
                 thresholds=thresholds.permute(ro).reshape(s.grid_shape)
             )
-
-    def sparsity_to_nnz(self, sparsity_to_nnz):
-        pass
-        # nnz = self.nu - int(sparsity * self.block_numel)
 
     @torch.no_grad()
     def soft_threshold(

@@ -117,9 +117,11 @@ class SparseBlock(ABC):
         pass
 
     def numblk(self) -> int:
+        """Total number of blocks in the grid."""
         return math.prod(self.grid_shape)
 
     def numel(self) -> int:
+        """Total number of elements across all blocks."""
         return self.numblk() * self.numel_per_block()
 
     @lru_cache()
@@ -521,9 +523,6 @@ class BlockSpec(SparseBlock):
             f"grid_shape={self.grid_shape}, name={self.name!r})"
         )
 
-    def __str__(self) -> str:
-        return repr(self)
-
     def __hash__(self) -> int:
         """Hash based on the underlying Parameter instance."""
         return hash(self.view)
@@ -544,7 +543,6 @@ class BlockCoupling(SparseBlock):
     name: Optional[str] = None
 
     _ref_order: Tuple[int] = field(init=False)
-    # _ref_block_grid_shape: Tuple[int] = field(init=False)
     _reverse_orders: List[Tuple[int, ...]] = field(init=False)
 
     def __post_init__(self):
@@ -681,8 +679,6 @@ class BlockCoupling(SparseBlock):
         hess_weighted_norms = self.norms(hess_weighted)
 
         denom = hess_weighted_norms - block_thresholds
-
-        denom = hess_weighted_norms - block_thresholds
         non_survivors = denom <= 0.0
         denom.clamp_(min=eps)
 
@@ -694,10 +690,7 @@ class BlockCoupling(SparseBlock):
 
         mu = (mu_low + mu_high) / 2
         for _ in range(max_iter):
-            # Compute Zeta(mu)
-            # scaling = H_block / (H_block + mu)
-            # mu.contiguous()
-
+            # Compute Zeta(mu): scaling = H_block / (H_block + mu)
             weighted_vs = {
                 s: hess_weighted[s]
                 / (
@@ -770,9 +763,6 @@ class BlockCoupling(SparseBlock):
             f"name={self.name!r}, "
             f"BlockSpecs=[\n\t{specs_str}])"
         )
-
-    def __str__(self) -> str:
-        return repr(self)
 
     def __hash__(self) -> int:
         """Hash based on hashes of all coupled specs."""

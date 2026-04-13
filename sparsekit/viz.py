@@ -336,12 +336,12 @@ def draw_layout(
 
     Visual encoding:
 
-    - **Fill color**: elements sharing the same group
+    - **Fill color**: elements sharing the same block
       get the same pastel fill.
-    - **Outline color**: groups in the same partition
+    - **Outline color**: blocks in the same scope
       are encapsulated by a single colored perimeter.
       Contiguous cells share one outline; disconnected
-      regions within the same partition each get their
+      regions within the same scope each get their
       own outline in the same color.
     - **Thin lines**: cell grid.
 
@@ -432,11 +432,11 @@ def draw_layout(
     axes = axes[0]
 
     # Color/hatch offsets: coupled params stagger so
-    # their group colors don't clash
+    # their block colors don't clash
     for i, (bs, gs, lbl) in enumerate(triples):
         # Stagger color offset so two coupled params
-        # with the same group layout still have
-        # visually distinct groups across subplots.
+        # with the same block layout still have
+        # visually distinct blocks across subplots.
         color_offset = i * (len(_COLORS) // max(n, 1))
         _draw_param(
             bs,

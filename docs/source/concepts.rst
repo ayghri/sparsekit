@@ -77,7 +77,7 @@ ScopeSpec: Scopes of Blocks
 
 :class:`~sparsekit.scope.ScopeSpec` divides the block grid into
 competition scopes.  Within each scope, blocks compete based on their
-norms: the top-``num_nz`` blocks survive; the rest are pruned.
+norms: the top-``nnz`` blocks survive; the rest are pruned.
 
 .. code-block:: python
 
@@ -85,7 +85,7 @@ norms: the top-``num_nz`` blocks survive; the rest are pruned.
 
    block = BlockSpec(param, shape=(1, 1))        # scalar blocks
    scope = ScopeSpec(block, shape=(1, 4))    # 4 blocks per scope
-   scope.hard_threshold(num_nz=2)                # keep 2 of 4
+   scope.hard_threshold(nnz=2)                # keep 2 of 4
 
 The ``shape`` specifies how many blocks along each dimension form one
 scope.  Use ``-1`` to span the entire dimension.
@@ -95,9 +95,9 @@ Key operations:
 - ``block_to_scope(t)`` -- reshape block tensor to scope layout
 - ``scope_to_block(t)`` -- broadcast scope values back to block grid
 - ``block_norms(values)`` -- block norms in scope layout
-- ``kth_largest(values, num_nz)`` -- per-scope pruning thresholds
-- ``hard_threshold(num_nz=...)`` -- prune in-place
-- ``get_masks(num_nz)`` -- return element-level masks without pruning
+- ``kth_largest(values, nnz)`` -- per-scope pruning thresholds
+- ``hard_threshold(nnz=...)`` -- prune in-place
+- ``get_masks(nnz)`` -- return element-level masks without pruning
 
 BlockCoupling and ScopeCoupling
 ------------------------------------
@@ -128,7 +128,7 @@ all of them.
        [scope_a, scope_b],
        orders=[(0, 1), (1, 0)],   # align scope grids
    )
-   coupled.hard_threshold(num_nz=2)
+   coupled.hard_threshold(nnz=2)
 
 StructuredOBS: Optimal Brain Surgeon
 -------------------------------------
@@ -159,4 +159,4 @@ Compensation modes:
    inv_h = StructuredOBS.compute_inverse(hessian, damp=1e-4)
 
    obs = StructuredOBS(scope, hessian, inv_h=inv_h)
-   obs.prune(num_nz=2, compensate="interleaved", n_splits=64)
+   obs.prune(nnz=2, compensate="interleaved", n_splits=64)

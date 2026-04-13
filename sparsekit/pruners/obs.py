@@ -474,7 +474,7 @@ class StructuredOBS:
         #   comp[g, si] = inv(C[P,P]) @ C[P, :]
         #   shape (np*bk, K)
         # where P = absolute column indices of pruned
-        # groups in block g, subset si.
+        # blocks in scope g, subset si.
 
         # Pruned column indices per (block, subset):
         # (num_parts, n_subsets, np*bk)
@@ -809,18 +809,18 @@ class StructuredOBS:
     @torch.no_grad()
     def prune(
         self,
-        num_nz: int,
+        nnz: int,
         block_size: int = 2048,
         compensate: str = "local",
         n_splits: int = 1,
     ) -> None:
-        """Prune to num_nz groups per block.
+        """Prune to nnz blocks per scope.
 
-        Phase 1: enumerate all C(gs, num_prune) subsets per block, pick
-                 the best per (row, block) using C = H^{-1} submatrices.
+        Phase 1: enumerate all C(bs, num_prune) subsets per scope, pick
+                 the best per (row, scope) using C = H^{-1} submatrices.
 
         Phase 2 (compensation):
-          - 'local': within-block only (fast, independent blocks)
+          - 'local': within-scope only (fast, independent scopes)
           - 'full':  sequential compensation to ALL K columns via C[P, :]
                      (slower but ~44% better than SparseGPT)
           - 'split': like 'full' but recomputes C between column splits.
@@ -830,13 +830,13 @@ class StructuredOBS:
                      using recomputed C. Single shared C (O(K²) memory).
 
         Args:
-            num_nz: Groups to keep per block.
+            nnz: Blocks to keep per scope.
             block_size: Column chunk size for subset search.
             compensate: 'local', 'full', 'split', or 'interleaved'.
             n_splits: Number of column splits (for 'split'/'interleaved').
         """
         gs = self.blocks_per_scope
-        num_prune = gs - num_nz
+        num_prune = gs - nnz
         if num_prune <= 0:
             return
 
@@ -1008,7 +1008,7 @@ class StructuredOBS:
     @torch.no_grad()
     def _prune_true_obs_coupled(
         self,
-        num_nz,
+        nnz,
         ng,  # pylint: disable=unused-argument
         chunk_size,
         order,
@@ -1016,7 +1016,7 @@ class StructuredOBS:
     ):
         """True OBS for row-coupled blocks.
 
-        Groups span different param rows. Blocks processed
+        Scopes span different param rows. Blocks processed
         sequentially; vectorized across view-rows using
         flat indexing (no per-element Python loops).
         """
@@ -1026,7 +1026,7 @@ class StructuredOBS:
         num_cols = self.num_cols
         M = self.M
         device = self.inv_hessian.device
-        num_prune = gs - num_nz
+        num_prune = gs - nnz
 
         num_gr = self.num_scope_rows
         gcm = self.block_col_map
@@ -1178,7 +1178,7 @@ class StructuredOBS:
     @torch.no_grad()
     def prune_true_obs(
         self,
-        num_nz: int,
+        nnz: int,
         ng: int = 64,
         chunk_size: int = 16,
         order: str = "left_to_right",
@@ -1193,8 +1193,8 @@ class StructuredOBS:
         blocks simultaneously per batch.
 
         Args:
-            num_nz: Groups to keep per block.
-            ng: Number of blocks to process per batch.
+            nnz: Blocks to keep per scope.
+            ng: Number of scopes to process per batch.
             chunk_size: Rows to process simultaneously.
             order: ``"left_to_right"`` or
                 ``"largest_first"``.
@@ -1213,14 +1213,14 @@ class StructuredOBS:
         num_cols = self.num_cols
         M = self.M
         device = self.inv_hessian.device
-        num_prune = gs - num_nz
+        num_prune = gs - nnz
 
         if num_prune <= 0:
             return
 
         if self.row_coupled:
             self._prune_true_obs_coupled(
-                num_nz,
+                nnz,
                 ng,
                 chunk_size,
                 order,

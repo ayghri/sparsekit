@@ -24,8 +24,8 @@ class View:
     Workflow::
 
         view  = View(param, shape, stride)
-        group = BlockSpec(view, block_shape=...)
-        block = ScopeSpec(group, block_shape=...)
+        block = BlockSpec(view, shape=...)
+        scope = ScopeSpec(block, shape=...)
         # ... pruning / thresholding -- writes go to param directly ...
 
     Args:
@@ -87,13 +87,13 @@ class View:
         reorder: bool = True,
         merge: bool = False,
     ) -> Tensor:
-        """Group-structured view of *t* via ``as_strided``.
+        """Block-structured view of *t* via ``as_strided``.
 
         Args:
             t: Tensor of shape ``(s0, s1, …, sm)``.
             block_shape: ``(b0, b1, …, bm)`` with ``si % bi == 0``.
-            reorder: Permute grid dims before group dims.
-            merge: Flatten group dims into a single trailing dim
+            reorder: Permute grid dims before block dims.
+            merge: Flatten block dims into a single trailing dim
                    (implies *reorder*).
 
         Returns:
@@ -137,7 +137,7 @@ class View:
 
         Args:
             block_values: ``(B0, B1, …)`` grid tensor.
-            block_shape: ``(b0, b1, …)`` group shape.
+            block_shape: ``(b0, b1, …)`` Block shape.
             fake: If True only unsqueeze (for broadcasting against
                   an interleaved view) without expanding.
 
@@ -161,11 +161,11 @@ class View:
     def apply_multiplier(
         self, multiplier: Tensor, block_shape: Tuple[int, ...]
     ):
-        """In-place multiply each group of ``self.data`` by a grid scalar.
+        """In-place multiply each block of ``self.data`` by a grid scalar.
 
         Args:
             multiplier: ``(B0, B1, …)`` grid-shaped tensor.
-            block_shape: Group shape.
+            block_shape: Block shape.
         """
         m = multiplier
         for i in range(multiplier.ndim):
@@ -174,11 +174,11 @@ class View:
         b_view.mul_(m)
 
     def apply_mask(self, mask: Tensor, block_shape: Tuple[int, ...]):
-        """Zero out groups of ``self.data`` where *mask* is True.
+        """Zero out blocks of ``self.data`` where *mask* is True.
 
         Args:
             mask: ``(B0, B1, …)`` boolean grid tensor.
-            block_shape: Group shape.
+            block_shape: Block shape.
         """
         self.apply_multiplier(~mask, block_shape)
 

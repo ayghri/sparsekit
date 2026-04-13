@@ -34,8 +34,8 @@ NVIDIA Ampere+):
 
    # 3. Prune (keep 2 of 4 blocks per scope)
    obs = StructuredOBS(scope, hessian, inv_h=inv_h)
-   obs.prune(num_nz=2, compensate="local")         # fast, within-scope
-   # obs.prune(num_nz=2, compensate="interleaved", n_splits=64)  # best quality
+   obs.prune(nnz=2, compensate="local")         # fast, within-scope
+   # obs.prune(nnz=2, compensate="interleaved", n_splits=64)  # best quality
 
 Magnitude Pruning (no Hessian)
 ------------------------------
@@ -46,7 +46,7 @@ Magnitude Pruning (no Hessian)
 
    block = BlockSpec(W, shape=(1, 1))
    scope = ScopeSpec(block, shape=(1, 4))
-   scope.hard_threshold(num_nz=2)   # keeps 2 largest-norm blocks per scope
+   scope.hard_threshold(nnz=2)   # keeps 2 largest-norm blocks per scope
 
 Coupled 2:4 (Two Parameters)
 -----------------------------
@@ -70,7 +70,7 @@ Prune two weight matrices jointly so their sparsity masks are coupled:
        [scope_u, scope_v],
        orders=[(0, 1), (1, 0)],
    )
-   coupled.hard_threshold(num_nz=2)
+   coupled.hard_threshold(nnz=2)
 
 Using the Builder API
 ---------------------
