@@ -38,6 +38,7 @@ accelerate = {version = "^1.13.0", optional = true}
 
 [tool.poetry.extras]
 viz = ["matplotlib"]
+scripts =["transformers", "lm-eval", "datasets", "pandas", "tqdm", "accelerate"]
 
 [build-system]
 requires = ["poetry-core"]
