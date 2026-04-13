@@ -27,8 +27,8 @@ from sparsekit.pruners.obd import magnitude
 from sparsekit.pruners.sparsegpt import sparsegpt
 
 DEVICE = torch.device("cuda")
-W_PATH = "/buckets/checkpoints/layer_0_W.cpt"
-X_PATH = "/buckets/checkpoints/layer_0_X.cpt"
+DEFAULT_W = "/buckets/checkpoints/layer_0_W.cpt"
+DEFAULT_X = "/buckets/checkpoints/layer_0_X.cpt"
 
 
 def progress(msg):
@@ -208,15 +208,17 @@ def main():
         help="Use first N rows (0=all)",
     )
     parser.add_argument("--chunk", type=int, default=16)
+    parser.add_argument("--W", default=DEFAULT_W, help="Path to weight checkpoint")
+    parser.add_argument("--X", default=DEFAULT_X, help="Path to input checkpoint")
     args = parser.parse_args()
 
     W0 = torch.load(
-        W_PATH, map_location=DEVICE, weights_only=True
+        args.W, map_location=DEVICE, weights_only=True
     ).float()
     if args.rows > 0:
         W0 = W0[: args.rows]
     X_cpu = torch.load(
-        X_PATH, map_location="cpu", weights_only=True
+        args.X, map_location="cpu", weights_only=True
     )
     M, K = W0.shape
     N = X_cpu.shape[0]

@@ -258,7 +258,7 @@ class BlockSpec(SparseBlock):
         name: Optional name for identification.
     """
 
-    view: View | Parameter
+    view: View
     shape: Tuple[int, ...]
     name: Optional[str] = None
 
@@ -300,7 +300,6 @@ class BlockSpec(SparseBlock):
     def grid_shape(self) -> Tuple[int, ...]:
         """Full grid shape including singleton dimensions."""
         return tuple(si // bi for si, bi in zip(self.view.shape, self.shape))
-
 
     @lru_cache()
     def numel_per_block(self) -> int:

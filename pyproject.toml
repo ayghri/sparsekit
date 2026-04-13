@@ -29,6 +29,12 @@ torch = ">=2.8.0"
 triton = ">=3.4.0"
 numpy = ">=2.4.0"
 matplotlib = { version = "*", optional = true }
+transformers = {version = "^5.5.3", optional = true}
+lm-eval = {version = "^0.4.11", optional = true}
+datasets = {version = "^4.8.4", optional = true}
+pandas = {version = "^3.0.2", optional = true}
+tqdm = {version = "^4.67.3", optional = true}
+accelerate = {version = "^1.13.0", optional = true}
 
 [tool.poetry.extras]
 viz = ["matplotlib"]

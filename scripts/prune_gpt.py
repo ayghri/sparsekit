@@ -349,8 +349,8 @@ def main():
     parser.add_argument(
         "--eval_every",
         type=int,
-        default=4,
-        help="Evaluate perplexity every N layers (0=only final)",
+        default=-1,
+        help="Evaluate perplexity every N layers (-1=only final)",
     )
     parser.add_argument("--ng", type=int, default=64, help="Groups per batch (True OBS)")
     parser.add_argument("--chunk_size", type=int, default=16, help="Rows per chunk (True OBS)")

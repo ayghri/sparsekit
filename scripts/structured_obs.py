@@ -26,8 +26,8 @@ from sparsekit.pruners.sparsegpt import (
 )
 
 DEVICE = torch.device("cuda")
-W_PATH = "/buckets/checkpoints/layer_0_W.cpt"
-X_PATH = "/buckets/checkpoints/layer_0_X.cpt"
+DEFAULT_W = "/buckets/checkpoints/layer_0_W.cpt"
+DEFAULT_X = "/buckets/checkpoints/layer_0_X.cpt"
 
 
 def progress(msg):
@@ -42,34 +42,26 @@ def check_pattern(W, block_size, scope_size, label):
     M, K = W.shape
     bpg = scope_size // block_size
     num_prune = bpg // 2
-    zeros = (W.abs() < 1e-10).view(
-        M, K // scope_size, bpg, block_size
-    )
+    zeros = (W.abs() < 1e-10).view(M, K // scope_size, bpg, block_size)
     block_dead = zeros.all(dim=-1)
     pruned_per_scope = block_dead.sum(dim=-1)
     ok = (pruned_per_scope == num_prune).all().item()
     if not ok:
         bad = (pruned_per_scope != num_prune).sum().item()
-        progress(
-            f"  WARNING: {label} has {bad} scopes violating pattern!"
-        )
+        progress(f"  WARNING: {label} has {bad} scopes violating pattern!")
     return ok
 
 
 def check_coupled_24(W, label=""):
     M, K = W.shape
-    Wv = W.as_strided(
-        size=(M, K // 16, 8, 2), stride=(K, 16, 1, 8)
-    )
+    Wv = W.as_strided(size=(M, K // 16, 8, 2), stride=(K, 16, 1, 8))
     pair_dead = (Wv.abs() < 1e-10).all(dim=-1)
     pair_dead_g = pair_dead.view(M, K // 16, 2, 4)
     pruned_per_scope = pair_dead_g.sum(dim=-1)
     ok = (pruned_per_scope == 2).all().item()
     if not ok:
         bad = (pruned_per_scope != 2).sum().item()
-        progress(
-            f"  WARNING: {label} has {bad} scopes violating coupled 2:4!"
-        )
+        progress(f"  WARNING: {label} has {bad} scopes violating coupled 2:4!")
     return ok
 
 
@@ -84,14 +76,9 @@ def check_block16(W, label=""):
     bad = 0
     for c0 in range(0, M, CHUNK16):
         Wc = W[c0 : c0 + CHUNK16]
-        block_dead = (
-            Wc.view(CHUNK16, G, BLK16).abs() < 1e-10
-        ).all(dim=-1)
+        block_dead = (Wc.view(CHUNK16, G, BLK16).abs() < 1e-10).all(dim=-1)
         for p in range(PAIRS16):
-            pair_dead = (
-                block_dead[p].long()
-                + block_dead[p + PAIRS16].long()
-            )
+            pair_dead = block_dead[p].long() + block_dead[p + PAIRS16].long()
             bad += (pair_dead != 1).sum().item()
     ok = bad == 0
     if not ok:
@@ -118,6 +105,8 @@ def main():
         default=0,
         help="Use only first N rows (0=all)",
     )
+    parser.add_argument("--W", default=DEFAULT_W, help="Path to weight checkpoint")
+    parser.add_argument("--X", default=DEFAULT_X, help="Path to input checkpoint")
     args = parser.parse_args()
 
     if args.pattern == "24":
@@ -137,19 +126,14 @@ def main():
     nnz = bpg // 2
 
     progress(
-        f"Pattern: {pattern_label}, ng={args.ng}, "
-        f"rows={args.rows or 'all'}"
+        f"Pattern: {pattern_label}, ng={args.ng}, " f"rows={args.rows or 'all'}"
     )
 
     progress("Loading data...")
-    W0 = torch.load(
-        W_PATH, map_location=DEVICE, weights_only=True
-    ).float()
+    W0 = torch.load(args.W, map_location=DEVICE, weights_only=True).float()
     if args.rows > 0:
         W0 = W0[: args.rows]
-    X_cpu = torch.load(
-        X_PATH, map_location="cpu", weights_only=True
-    )
+    X_cpu = torch.load(args.X, map_location="cpu", weights_only=True)
     M, K = W0.shape
     N = X_cpu.shape[0]
     progress(f"  W: {W0.shape}, X: {X_cpu.shape}")
@@ -163,9 +147,7 @@ def main():
 
     ref_out = output_error(W0, torch.zeros_like(W0), H, N)
     ref_w = W0.norm().item()
-    progress(
-        f"Reference ||X W^T||_F = {ref_out:.4e},  ||W||_F = {ref_w:.4e}"
-    )
+    progress(f"Reference ||X W^T||_F = {ref_out:.4e},  ||W||_F = {ref_w:.4e}")
 
     progress("Computing C = H^{-1}...")
     t0 = time.time()
@@ -184,9 +166,7 @@ def main():
     elif args.pattern == "block16":
         W_sgpt = sparsegpt_block16(W0, H)
     else:
-        W_sgpt = sparsegpt(
-            W0, H, block_size=block_size, scope_size=scope_size
-        )
+        W_sgpt = sparsegpt(W0, H, block_size=block_size, scope_size=scope_size)
     torch.cuda.synchronize(DEVICE)
     t = time.time() - t0
     out_loss = output_error(W_sgpt, W0, H, N)
@@ -257,9 +237,7 @@ def main():
             ng=args.ng,
             order="largest_first",
             scoring="independent",
-            progress_fn=lambda m: print(
-                f"\r  {m}", end="", flush=True
-            ),
+            progress_fn=lambda m: print(f"\r  {m}", end="", flush=True),
         )
         torch.cuda.synchronize(DEVICE)
         t = time.time() - t0
@@ -275,9 +253,7 @@ def main():
             ng=args.ng,
             order="largest_first",
             scoring="independent",
-            progress_fn=lambda m: print(
-                f"\r  {m}", end="", flush=True
-            ),
+            progress_fn=lambda m: print(f"\r  {m}", end="", flush=True),
         )
         torch.cuda.synchronize(DEVICE)
         t = time.time() - t0
@@ -293,10 +269,7 @@ def main():
     else:
         check_pattern(W_obs, block_size, scope_size, lbl)
     mask_obs = W_obs.abs() < 1e-10
-    overlap = (
-        (mask_obs & mask_sgpt).sum().item()
-        / mask_sgpt.sum().item()
-    )
+    overlap = (mask_obs & mask_sgpt).sum().item() / mask_sgpt.sum().item()
     results.append((lbl, out_loss, t, sp, overlap))
     progress(
         f"\n  Out={out_loss:.4e} ({out_loss/ref_out*100:.4f}%),  "

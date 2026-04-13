@@ -116,22 +116,23 @@ class StructuredOBS:
     ):
         self.scope = scope
         block = scope.block
-        assert isinstance(block, BlockSpec)
 
         self.block = block
-        param = block.view
+        assert isinstance(block, BlockSpec)
+        # param = block.view
         self.hessian = hessian
         self.damp = damp
         self.num_cols = hessian.shape[0]
         device = hessian.device
 
-        if isinstance(param, View):
-            self.W = param.param
-        else:
-            self.W = param
+        self.W = block.view.param
+        # if isinstance(param, View):
+        #     self.W = param.param
+        # else:
+        #     self.W = param
 
         self.M = self.W.shape[0]
-        self.bk = block.block_numel
+        self.bk = block.numel_per_block()
 
         grid_shape = block.grid_shape
         scope_shape = scope.shape
