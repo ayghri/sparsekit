@@ -8,3 +8,9 @@ dl.py.property + dl.py.method,
 dl.py.method + dl.py.property {
     margin-top: 1.5em !important;
 }
+
+/* Fix RTD theme making dl.py.property inline-block when nested inside a class dl */
+py.property {
+    display: block !important;
+}
+

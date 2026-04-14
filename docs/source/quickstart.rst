@@ -8,7 +8,7 @@ Or from source:
 
 .. code-block:: bash
 
-   cd sparsekit && pip install .
+   pip install sparsekit
 
 Basic 2:4 Pruning
 -----------------

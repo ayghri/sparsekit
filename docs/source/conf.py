@@ -2,7 +2,7 @@
 
 project = "SparseKit"
 author = "Ayoub Ghriss"
-release = "0.1.0"
+release = "0.1.4"
 
 extensions = [
     "sphinx.ext.autodoc",

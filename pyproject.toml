@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "sparsekit"
-version = "0.1.3"
+version = "0.1.4"
 description = "Sparsity Kit for Structured Sparsity Specification"
 authors = ["Ayoub Ghriss <research@ayghri.me>"]
 readme = "README.md"
