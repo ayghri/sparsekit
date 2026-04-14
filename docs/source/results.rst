@@ -1,8 +1,8 @@
 Benchmark Results
 =================
 
-| **Data:** LLaMA layer 0 — W (2560, 9728), X (244449, 9728)
-| **Device:** CUDA (A5000, gpu:1)
+| **Data:** Qwen3 4B layer 0 — W (2560, 9728), X (244449, 9728)
+| **Device:** CUDA (gpu:1)
 | **Loss metric:** ``||X(W_pruned - W0)^T||_F / ||X W0^T||_F`` (relative output Frobenius norm)
 
 ----
